@@ -66,6 +66,16 @@ export interface TuiSnapshot {
   readonly activeLogTab: LogTab;
   readonly activeNarrowPanel: NarrowPanel;
   readonly logs: LogBuckets;
+  /**
+   * Chronological work-status feed lines (design: HH:MM:SS  [tag] text).
+   * Preferred over role-bucket logs for ActivityFeed rendering.
+   */
+  readonly activityLines: readonly string[];
+  /** Design left panel: current role while a stage is active. */
+  readonly activeRole?: AgentRole;
+  readonly activeAdapter?: string;
+  /** Design left panel: 候选工作区 / 项目目录 */
+  readonly executionScopeLabel?: string;
   readonly canApprove: boolean;
   readonly canRework: boolean;
   readonly elapsedLabel?: string;
@@ -195,6 +205,7 @@ export function createInitialTuiSnapshot(
 ): TuiSnapshot {
   const {
     logs: overrideLogs,
+    activityLines: overrideActivityLines,
     redactorSecrets: overrideSecrets,
     ...rest
   } = overrides;
@@ -251,6 +262,7 @@ export function createInitialTuiSnapshot(
     modal,
     focusOwner,
     logs: freezeLogs(overrideLogs ?? EMPTY_LOGS),
+    activityLines: Object.freeze([...(overrideActivityLines ?? [])]),
     redactorSecrets: Object.freeze([...(overrideSecrets ?? [])]),
   };
 
@@ -270,6 +282,7 @@ function deepFreezeSnapshot(snapshot: TuiSnapshot): TuiSnapshot {
   const frozen: TuiSnapshot = {
     ...snapshot,
     logs: freezeLogs(snapshot.logs),
+    activityLines: Object.freeze([...(snapshot.activityLines ?? [])]),
     redactorSecrets: Object.freeze([...snapshot.redactorSecrets]),
     recoveryAllowedActions: Object.freeze([...snapshot.recoveryAllowedActions]),
     roles: snapshot.roles === undefined
@@ -382,11 +395,37 @@ export function createTuiStore(options: CreateTuiStoreOptions = {}): TuiStore {
           projectPathDraft: intent.projectPath,
           statusMessage: 'Selecting project',
         };
-      case 'CREATE_TASK':
+      case 'CREATE_TASK': {
+        // Optimistic work-status screen: do not wait for AI stages to finish.
+        const submitted = intent.requirements.trim().slice(0, 120);
+        const stamp = new Date();
+        const hh = String(stamp.getHours()).padStart(2, '0');
+        const mm = String(stamp.getMinutes()).padStart(2, '0');
+        const ss = String(stamp.getSeconds()).padStart(2, '0');
+        const clock = `${hh}:${mm}:${ss}`;
+        const lines = [
+          `${clock}  [system] 任务已提交，进入工作状态…`,
+          `${clock}  [system] 需求: ${submitted}`,
+        ];
         return {
           ...current,
-          statusMessage: 'Creating task',
+          screen: 'run',
+          workflowState: 'checking_environment',
+          processRunning: true,
+          loading: true,
+          empty: false,
+          error: undefined,
+          requirementsDraft: '',
+          statusMessage: uiText(current.uiLanguage, 'activity.starting'),
+          activityLines: Object.freeze([...lines]),
+          logs: {
+            ...current.logs,
+            system: Object.freeze(
+              [...current.logs.system, ...lines].slice(-current.maxLogLines),
+            ),
+          },
         };
+      }
       case 'PROJECT_PATH_INPUT': {
         if (current.screen !== 'project') return current;
         return {
@@ -768,6 +807,7 @@ export function createTuiStore(options: CreateTuiStoreOptions = {}): TuiStore {
       ...partial,
       ...preserved,
       logs: partial.logs ?? current.logs,
+      activityLines: partial.activityLines ?? current.activityLines,
       redactorSecrets: partial.redactorSecrets ?? current.redactorSecrets,
     });
   };
@@ -871,6 +911,13 @@ export function createTuiStore(options: CreateTuiStoreOptions = {}): TuiStore {
             next = {
               ...next,
               statusMessage: result.reason,
+              ...(intent.type === 'CREATE_TASK' || intent.type === 'APPROVE'
+                ? {
+                    loading: false,
+                    processRunning: false,
+                    error: result.reason,
+                  }
+                : {}),
             };
           } else if (result.kind === 'exit_gate') {
             next = {

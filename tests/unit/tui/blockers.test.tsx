@@ -342,10 +342,10 @@ describe('Task 19 blockers', () => {
         <App snapshot={logOnly} disableWindowSizeSync />,
       );
       const logText = frameText(logFrame());
-      expect(logText).toMatch(/Agent log/i);
-      // WorkflowPanel title line is absent when log is active.
-      expect(logText).not.toMatch(/Environment check/);
-      expect(logText).not.toMatch(/Implement code/);
+      expect(logText).toMatch(/Activity|工作动态/i);
+      // Workflow detail panel title is absent when activity is active.
+      // Compact stepper chrome may still list short stage names.
+      expect(logText).not.toMatch(/Current role|当前角色|状态:\s*implementing/i);
       u1();
 
       const wfOnly = baseSnapshot({
@@ -357,8 +357,9 @@ describe('Task 19 blockers', () => {
         <App snapshot={wfOnly} disableWindowSizeSync />,
       );
       const wfText = frameText(wfFrame());
-      expect(wfText).toMatch(/Environment check|Implement code/);
-      expect(wfText).not.toMatch(/Agent log/);
+      expect(wfText).toMatch(/Workflow|工作流/i);
+      expect(wfText).toMatch(/implementing|running|运行中/i);
+      expect(wfText).not.toMatch(/Activity|工作动态/i);
       u2();
     });
 
@@ -380,29 +381,28 @@ describe('Task 19 blockers', () => {
         />,
       );
 
-      // workflow -> log (master)
+      // workflow -> activity (design: primary work-status feed)
       stdin.write('\t');
       await flushUi(20);
       let text = frameText(lastFrame());
       expect(storeRef.current!.getSnapshot().activeNarrowPanel).toBe('log');
-      expect(text).toMatch(/Log:\s*master/i);
-      expect(text).not.toMatch(/Environment check|Implement code/);
+      expect(text).toMatch(/Activity|工作动态/i);
+      expect(text).not.toMatch(/Current role|当前角色/i);
 
-      // cycle log tabs
+      // cycle log tabs (state advances; UI stays on activity feed)
       stdin.write('\t');
       await flushUi();
-      text = frameText(lastFrame());
-      expect(text).toMatch(/Log:\s*implementer/i);
+      expect(storeRef.current!.getSnapshot().activeLogTab).toBe('implementer');
 
       stdin.write('\t');
       await flushUi();
-      text = frameText(lastFrame());
-      expect(text).toMatch(/Log:\s*reviewer/i);
+      expect(storeRef.current!.getSnapshot().activeLogTab).toBe('reviewer');
 
       stdin.write('\t');
       await flushUi();
       text = frameText(lastFrame());
-      expect(text).toMatch(/Log:\s*system/i);
+      expect(text).toMatch(/Activity|工作动态/i);
+      expect(storeRef.current!.getSnapshot().activeLogTab).toBe('system');
 
       // wrap back to workflow
       stdin.write('\t');

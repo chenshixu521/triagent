@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TriAgent 工作状态界面 v2 — 设计稿</title>
+  <style>
+    :root {
+      --bg: #0c0c0c;
+      --panel: #141414;
+      --border: #333;
+      --text: #e8e8e8;
+      --dim: #8a8a8a;
+      --cyan: #4ecdc4;
+      --yellow: #f0c14e;
+      --green: #6bcb77;
+      --magenta: #c77dff;
+      --red: #ff6b6b;
+      --accent: #d6a756;
+      --master: #4ecdc4;
+      --impl: #f4d35e;
+      --review: #c77dff;
+      --system: #9aa0a6;
+      --tool: #7eb8da;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Cascadia Code", "JetBrains Mono", Consolas, "Sarasa Mono SC", monospace;
+      background: #1a1a1a;
+      color: var(--text);
+      padding: 24px;
+      line-height: 1.45;
+    }
+    h1 { font-size: 1.25rem; color: var(--accent); margin: 0 0 8px; }
+    h2 { font-size: 1rem; color: var(--cyan); margin: 28px 0 10px; }
+    p.note { color: var(--dim); max-width: 920px; margin: 0 0 20px; font-size: 0.9rem; }
+    .screens { display: flex; flex-direction: column; gap: 28px; }
+    .screen-wrap { max-width: 960px; }
+    .label {
+      font-size: 0.8rem;
+      color: var(--dim);
+      margin-bottom: 6px;
+      letter-spacing: 0.04em;
+    }
+    .term {
+      background: var(--bg);
+      border: 1px solid #2a2a2a;
+      border-radius: 10px;
+      padding: 12px 14px 10px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+      min-height: 420px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .header { color: var(--cyan); font-weight: 700; }
+    .header .spin { color: var(--yellow); }
+    .roles { color: var(--dim); font-size: 0.85rem; }
+    .stepper {
+      color: var(--dim);
+      font-size: 0.82rem;
+      white-space: nowrap;
+      overflow: hidden;
+      border-bottom: 1px solid #222;
+      padding-bottom: 6px;
+    }
+    .stepper .done { color: var(--green); }
+    .stepper .active { color: var(--yellow); font-weight: 700; }
+    .stepper .todo { color: #555; }
+    .main {
+      display: grid;
+      grid-template-columns: 32% 1fr;
+      gap: 10px;
+      flex: 1;
+      min-height: 280px;
+    }
+    .panel {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+    .panel h3 {
+      margin: 0 0 6px;
+      font-size: 0.85rem;
+      color: var(--text);
+    }
+    .panel .meta { color: var(--dim); font-size: 0.8rem; }
+    .activity h3 { display: flex; justify-content: space-between; }
+    .badge-work { color: var(--yellow); font-size: 0.8rem; }
+    .badge-done { color: var(--green); font-size: 0.8rem; }
+    .line { font-size: 0.8rem; margin: 2px 0; white-space: pre-wrap; word-break: break-all; }
+    .t { color: #666; }
+    .r-system { color: var(--system); }
+    .r-master { color: var(--master); }
+    .r-impl { color: var(--impl); }
+    .r-review { color: var(--review); }
+    .r-tool { color: var(--tool); }
+    .current {
+      color: var(--cyan);
+      font-size: 0.85rem;
+      margin-bottom: 4px;
+    }
+    .footer {
+      border-top: 1px solid #222;
+      padding-top: 6px;
+      color: var(--dim);
+      font-size: 0.8rem;
+    }
+    .footer .hint { color: var(--accent); }
+    .modal {
+      margin-top: 8px;
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      padding: 10px 12px;
+      background: #1a1510;
+    }
+    .modal strong { color: var(--accent); }
+    .legend {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 8px;
+      max-width: 960px;
+      margin-top: 12px;
+    }
+    .legend div {
+      background: #111;
+      border: 1px solid #2a2a2a;
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 0.8rem;
+      color: var(--dim);
+    }
+    .legend b { color: var(--text); }
+    .pill {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: #222;
+      color: var(--accent);
+      font-size: 0.75rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>TriAgent 工作状态界面 v2 — 设计稿（请审批）</h1>
+  <p class="note">
+    参考 Claude Code / Codex CLI：顶部阶段条 + 中央事件流 + 底部快捷键。
+    本页为<strong>可审批的精确文案布局</strong>（非 AI 乱码图）。请对照三张屏幕：运行中 / 已完成 / 退出确认。
+  </p>
+
+  <div class="legend">
+    <div><b>事件类型</b><br/>stage 阶段 · tool 工具 · file 文件 · agent 文本 · error 错误</div>
+    <div><b>角色色</b><br/><span class="r-master">master</span> · <span class="r-impl">impl</span> · <span class="r-review">review</span> · <span class="r-system">system</span></div>
+    <div><b>退出</b><br/>运行中 <span class="pill">Q</span> 取消任务 · 完成后 <span class="pill">Q / Esc</span> 退出 · 任意时 <span class="pill">Ctrl+C</span> 二次确认退出</div>
+    <div><b>增强点</b><br/>实时灌入 agent stdout / tool_use / 改文件摘要，不再只有“规划中…”</div>
+  </div>
+
+  <div class="screens">
+    <!-- Screen 1: Working -->
+    <div class="screen-wrap">
+      <h2>① 运行中 — 细粒度工作动态</h2>
+      <div class="label">SCREEN: run · workflowState: implementing</div>
+      <div class="term">
+        <div class="header">TRIAGENT · 任务 task-a1b2 · 00:03:18 · <span class="spin">● 工作中</span></div>
+        <div class="roles">主控=Claude · 实施=Grok · 审查=Codex</div>
+        <div class="stepper">
+          <span class="done">✓ 环境</span> →
+          <span class="done">✓ 规划</span> →
+          <span class="done">✓ 审批</span> →
+          <span class="active">● 实施</span> →
+          <span class="todo">○ 审查</span> →
+          <span class="todo">○ 终检</span> →
+          <span class="todo">○ 完成</span>
+        </div>
+        <div class="main">
+          <div class="panel">
+            <h3>工作流</h3>
+            <div class="meta">状态: implementing</div>
+            <div class="meta">进程: 运行中</div>
+            <div class="meta">返工 0/3</div>
+            <div class="meta" style="margin-top:8px">当前角色: implementer</div>
+            <div class="meta">适配器: Grok</div>
+            <div class="meta">作用域: 候选工作区</div>
+          </div>
+          <div class="panel activity">
+            <h3>工作动态 <span class="badge-work">● 工作中</span></h3>
+            <div class="current">→ 实施代理正在修改代码…</div>
+            <div class="line"><span class="t">15:01:02</span> <span class="r-system">[system]</span> 任务已提交</div>
+            <div class="line"><span class="t">15:01:04</span> <span class="r-system">[stage]</span> 环境检查通过</div>
+            <div class="line"><span class="t">15:01:12</span> <span class="r-master">[master]</span> Claude 开始规划</div>
+            <div class="line"><span class="t">15:01:18</span> <span class="r-tool">[tool]</span> master Read README.md</div>
+            <div class="line"><span class="t">15:01:40</span> <span class="r-master">[master]</span> 计划已生成，等待确认</div>
+            <div class="line"><span class="t">15:02:01</span> <span class="r-system">[stage]</span> 用户已批准计划</div>
+            <div class="line"><span class="t">15:02:05</span> <span class="r-impl">[impl]</span> Grok 开始实施</div>
+            <div class="line"><span class="t">15:02:22</span> <span class="r-tool">[tool]</span> impl Write src/hello.ts</div>
+            <div class="line"><span class="t">15:02:48</span> <span class="r-tool">[tool]</span> impl Edit package.json (+1 依赖)</div>
+            <div class="line"><span class="t">15:03:10</span> <span class="r-impl">[impl]</span> 正在运行类型检查…</div>
+          </div>
+        </div>
+        <div class="footer">
+          <span class="hint">[P]</span> 暂停 · <span class="hint">[M]</span> 消息 · <span class="hint">[D]</span> Diff · <span class="hint">[Tab]</span> 面板 · <span class="hint">[Q]</span> 取消任务 · <span class="hint">[Ctrl+C]</span> 退出
+        </div>
+      </div>
+    </div>
+
+    <!-- Screen 2: Completed -->
+    <div class="screen-wrap">
+      <h2>② 已完成 — 可退出 / 可返工</h2>
+      <div class="label">SCREEN: review · workflowState: completed · 终端态快捷键生效</div>
+      <div class="term">
+        <div class="header">TRIAGENT · 任务 task-a1b2 · 00:08:42 · <span style="color:var(--green)">✓ 已完成</span></div>
+        <div class="roles">主控=Claude · 实施=Grok · 审查=Codex</div>
+        <div class="stepper">
+          <span class="done">✓ 环境</span> →
+          <span class="done">✓ 规划</span> →
+          <span class="done">✓ 审批</span> →
+          <span class="done">✓ 实施</span> →
+          <span class="done">✓ 审查</span> →
+          <span class="done">✓ 终检</span> →
+          <span class="done">✓ 完成</span>
+        </div>
+        <div class="main">
+          <div class="panel">
+            <h3>结果摘要</h3>
+            <div class="meta">状态: completed</div>
+            <div class="meta">进程: 已停止</div>
+            <div class="meta">返工 0/3</div>
+            <div class="meta" style="margin-top:8px;color:var(--green)">通过主控终检</div>
+            <div class="meta">变更文件: 3</div>
+          </div>
+          <div class="panel activity">
+            <h3>工作动态 <span class="badge-done">空闲</span></h3>
+            <div class="current">→ 任务已完成</div>
+            <div class="line"><span class="t">15:06:12</span> <span class="r-review">[review]</span> Codex 审查通过</div>
+            <div class="line"><span class="t">15:07:01</span> <span class="r-master">[master]</span> 终检通过</div>
+            <div class="line"><span class="t">15:07:02</span> <span class="r-system">[stage]</span> 提升候选变更到正式项目</div>
+            <div class="line"><span class="t">15:08:40</span> <span class="r-system">[system]</span> 任务完成 · 可退出</div>
+            <div class="line" style="color:var(--dim);margin-top:10px">提示: 按 Q 或 Esc 退出程序；R 在合法时返工</div>
+          </div>
+        </div>
+        <div class="footer">
+          <span class="hint">[Q / Esc]</span> 退出程序 · <span class="hint">[R]</span> 返工(若可用) · <span class="hint">[D]</span> Diff · <span class="hint">[Ctrl+C]</span> 退出确认
+        </div>
+      </div>
+    </div>
+
+    <!-- Screen 3: Exit confirm -->
+    <div class="screen-wrap">
+      <h2>③ 退出确认 — 任何时刻可用</h2>
+      <div class="label">Ctrl+C → 控制菜单 → 再次 Ctrl+C → 终止确认 · 或完成后 Q 直接 REQUEST_EXIT</div>
+      <div class="term" style="min-height:280px">
+        <div class="header">TRIAGENT · 任务 task-a1b2 · 00:03:18 · <span class="spin">● 工作中</span></div>
+        <div class="roles">主控=Claude · 实施=Grok · 审查=Codex</div>
+        <div class="stepper">
+          <span class="done">✓ 环境</span> → <span class="active">● 规划</span> → <span class="todo">○ …</span>
+        </div>
+        <div class="panel" style="margin-top:8px">
+          <div class="line r-system">[system] 主控正在规划任务…</div>
+        </div>
+        <div class="modal">
+          <strong>退出确认</strong>
+          <div style="margin-top:6px;color:var(--dim)">将清理进程并退出 TriAgent。</div>
+          <div style="margin-top:8px"><span class="hint">Enter / Y</span> 确认退出 · <span class="hint">Esc</span> 取消</div>
+        </div>
+        <div class="footer" style="margin-top:auto">
+          有活动任务时: 先中断/取消，再允许退出（失败关闭）
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2>审批要点</h2>
+  <p class="note">
+    1) 工作动态是否接受 tool/file/stage 分行展示？<br/>
+    2) 完成后快捷键是否改为 <b>Q/Esc = 退出</b>（运行中 Q 仍为取消任务）？<br/>
+    3) Ctrl+C 二次确认退出是否保留？<br/>
+    4) 是否需要窄屏只显示动态区、隐藏左侧工作流？（当前实现已有 Tab 切换）
+  </p>
+</body>
+</html>

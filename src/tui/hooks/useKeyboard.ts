@@ -188,6 +188,10 @@ export function useKeyboard(options: UseKeyboardOptions): void {
       }
 
       if (snapshot.screen === 'new_task') {
+        if (isEscape) {
+          void publish({ type: 'REQUEST_EXIT' });
+          return;
+        }
         if (key.ctrl && input.toLowerCase() === 'p') {
           void publish({ type: 'TOGGLE_PLAN_APPROVAL' });
           return;
@@ -252,6 +256,28 @@ export function useKeyboard(options: UseKeyboardOptions): void {
       }
 
       const letter = input.toLowerCase();
+      // Form screens (new_task/project) already returned above.
+      // Q cancels while a task is in flight; Q exits on terminal/idle screens.
+      const terminalWorkflow =
+        snapshot.workflowState === 'completed'
+        || snapshot.workflowState === 'cancelled'
+        || snapshot.workflowState === 'failed';
+      const shouldCancelTask =
+        !terminalWorkflow
+        && (
+          snapshot.screen === 'run'
+          || snapshot.screen === 'plan_approval'
+          || snapshot.processRunning
+        );
+
+      // Esc: leave app when not canceling an in-flight task (modals handled above).
+      if (isEscape) {
+        if (!shouldCancelTask) {
+          void publish({ type: 'REQUEST_EXIT' });
+        }
+        return;
+      }
+
       if (snapshot.screen === 'recovery' && snapshot.taskId !== undefined) {
         switch (letter) {
           case 'i':
@@ -268,6 +294,13 @@ export function useKeyboard(options: UseKeyboardOptions): void {
             if (snapshot.recoveryAllowedActions.includes('cancel')) {
               void publish({ type: 'RECOVERY_CANCEL', taskId: snapshot.taskId });
             }
+            return;
+          case 'm':
+            // Allow adding context while interrupted before continue.
+            void publish({ type: 'OPEN_MESSAGE_ENTRY' });
+            return;
+          case 'q':
+            void publish({ type: 'REQUEST_EXIT' });
             return;
           default:
             break;
@@ -290,7 +323,12 @@ export function useKeyboard(options: UseKeyboardOptions): void {
           void publish({ type: 'APPROVE' });
           return;
         case 'q':
-          void publish({ type: 'OPEN_CANCEL_CONFIRM' });
+          // In-flight task: cancel confirm. Terminal/idle: exit app.
+          if (shouldCancelTask) {
+            void publish({ type: 'OPEN_CANCEL_CONFIRM' });
+          } else {
+            void publish({ type: 'REQUEST_EXIT' });
+          }
           return;
         default:
           return;

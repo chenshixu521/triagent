@@ -17,12 +17,14 @@ import {
   asBaselineId,
   type AttemptId,
   type BaselineId,
+  type ConversationId,
   type TaskId,
 } from '../domain/ids.js';
 import { createPendingRunAttempt } from '../domain/attempt.js';
 import type { AgentRole, TaskDefinition } from '../domain/task.js';
 import type { JsonlLog } from '../logging/jsonl-log.js';
 import { ActionRepository } from '../persistence/action-repository.js';
+import type { AgentSessionRepository } from '../persistence/agent-session-repository.js';
 import { AttemptRepository } from '../persistence/attempt-repository.js';
 import type { ReadWriteDatabase } from '../persistence/database.js';
 import { serializeJsonValue } from '../persistence/json-value.js';
@@ -116,6 +118,15 @@ export interface TaskOrchestratorOptions {
    * implementer adapter is Grok; ignored for live-project implementers.
    */
   readonly implementationWorkspacesDirectory?: string;
+  /**
+   * Optional operator mid-run context (queued user messages) injected into
+   * every subsequent stage prompt. Read at prompt-build time.
+   */
+  readonly getOperatorContext?: () => readonly string[];
+  /**
+   * Store-backed agent sessions for implementer conversation-id resume (MVP).
+   */
+  readonly agentSessions?: AgentSessionRepository;
 }
 
 interface PreparedEffect {
@@ -349,6 +360,8 @@ export class TaskOrchestrator {
   readonly #now: () => Date;
   readonly #hooks: TaskOrchestratorHooks;
   readonly #implementationWorkspacesDirectory: string | undefined;
+  readonly #getOperatorContext: (() => readonly string[]) | undefined;
+  readonly #agentSessions: AgentSessionRepository | undefined;
   readonly #workspaces: ImplementationWorkspaceRepository;
   #taskBaselineId?: string;
   #lockId?: string;
@@ -411,6 +424,8 @@ export class TaskOrchestrator {
     this.#idFactory = options.idFactory ?? (() => randomUUID());
     this.#now = options.now ?? (() => new Date());
     this.#hooks = options.hooks ?? {};
+    this.#getOperatorContext = options.getOperatorContext;
+    this.#agentSessions = options.agentSessions;
   }
 
   public initialize(): void {
@@ -1660,6 +1675,21 @@ export class TaskOrchestrator {
     );
   }
 
+  /**
+   * Implementer MVP: resume the latest store-backed conversation when present.
+   * Master/reviewer always start a fresh context for independence.
+   */
+  #resolveImplementerResumeConversation(): ConversationId | undefined {
+    if (this.#agentSessions === undefined) return undefined;
+    const agentKind = this.#taskDefinition.roles.implementer;
+    const found = this.#agentSessions.findLatestForTaskRole({
+      taskId: this.#taskDefinition.taskId,
+      role: 'implementer',
+      agentKind,
+    });
+    return found?.conversationId;
+  }
+
   async #runStage(prepared: PreparedEffect, effect: StartEffect): Promise<void> {
     const adapter = this.#adapters[effect.role];
     // Never silently substitute a different adapter than the task role assignment.
@@ -1669,6 +1699,10 @@ export class TaskOrchestrator {
         `adapter substitution denied: role ${effect.role} requires ${expectedKind}, got ${adapter.kind}`,
       );
     }
+    const resumeConversationId =
+      effect.role === 'implementer'
+        ? this.#resolveImplementerResumeConversation()
+        : undefined;
     const request: AgentRequest = {
       attemptId: effect.attemptId,
       baselineId: effect.baselineId,
@@ -1685,6 +1719,9 @@ export class TaskOrchestrator {
         taskId: effect.taskId,
         adapter,
         request,
+        ...(resumeConversationId === undefined
+          ? {}
+          : { resumeConversationId }),
       });
     } catch (error) {
       if (this.#actions.get(prepared.actionId)?.status !== 'failed') {
@@ -2532,7 +2569,7 @@ export class TaskOrchestrator {
           return 'master_validation';
       }
     })();
-    return buildStagePrompt({
+    const base = buildStagePrompt({
       stage,
       role: effect.role,
       attemptId: effect.attemptId,
@@ -2540,6 +2577,15 @@ export class TaskOrchestrator {
       projectRoot: this.#projectRoot,
       requirements: this.#requirements,
     });
+    const notes = this.#getOperatorContext?.() ?? [];
+    if (notes.length === 0) return base;
+    return [
+      base,
+      '',
+      '## Operator mid-run context (must honor)',
+      'The operator interrupted or annotated this task. Treat the following as additional durable context for this stage:',
+      ...notes.map((note, index) => `${String(index + 1)}. ${note}`),
+    ].join('\n');
   }
 
   #nextAttemptId(): AttemptId {

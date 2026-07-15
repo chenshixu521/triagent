@@ -16,7 +16,7 @@ import {
   settingsToBudgetLimits,
   type AppSettings,
 } from '../config/settings.js';
-import { asTaskId, type TaskId } from '../domain/ids.js';
+import { asAttemptId, asTaskId, type TaskId } from '../domain/ids.js';
 import {
   AGENT_KINDS,
   createRoleAssignment,
@@ -37,7 +37,12 @@ import {
   type PreparedWorkflowEffectIntent,
 } from '../workflow/task-orchestrator.js';
 import { SafeAgentLaunchCoordinator } from './safe-agent-launch-coordinator.js';
+import {
+  formatAgentActivity,
+  renderActivityLine,
+} from '../tui/activity-format.js';
 import type {
+  TaskActivityListener,
   TaskRuntimeFactory,
   TaskRuntimeInput,
   TaskRuntimePort,
@@ -306,16 +311,23 @@ class ProductionTaskRuntime implements TaskRuntimePort {
   readonly #orchestrator: TaskOrchestrator;
   readonly #log: JsonlLog;
   readonly #probeDirectory: string;
+  readonly #supervisor: ProcessSupervisorPort;
+  readonly #contextMessages: string[] = [];
   #disposed = false;
+  #activityListener: TaskActivityListener | undefined;
 
   public constructor(input: {
     readonly orchestrator: TaskOrchestrator;
     readonly log: JsonlLog;
     readonly probeDirectory: string;
+    readonly supervisor: ProcessSupervisorPort;
+    readonly onActivity?: TaskActivityListener;
   }) {
     this.#orchestrator = input.orchestrator;
     this.#log = input.log;
     this.#probeDirectory = input.probeDirectory;
+    this.#supervisor = input.supervisor;
+    this.#activityListener = input.onActivity;
   }
 
   public initialize(): void {
@@ -334,9 +346,70 @@ class ProductionTaskRuntime implements TaskRuntimePort {
     return this.#orchestrator.approvePlan();
   }
 
+  public setActivityListener(listener: TaskActivityListener | undefined): void {
+    this.#activityListener = listener;
+  }
+
+  public queueContextMessage(text: string): void {
+    const body = text.trim();
+    if (body.length === 0) return;
+    this.#contextMessages.push(body);
+  }
+
+  public peekContextMessages(): readonly string[] {
+    return Object.freeze([...this.#contextMessages]);
+  }
+
+  public getOperatorContext(): readonly string[] {
+    return this.peekContextMessages();
+  }
+
+  public async requestStopActiveAttempt(): Promise<void> {
+    let attemptId: ReturnType<typeof asAttemptId> | undefined;
+    try {
+      const raw = this.#orchestrator.currentTask().workflowSnapshot.activeAttemptId;
+      attemptId = raw === undefined ? undefined : asAttemptId(raw);
+    } catch {
+      attemptId = undefined;
+    }
+    if (attemptId === undefined) return;
+    try {
+      await this.#supervisor.requestGracefulStop(attemptId);
+    } catch {
+      // Graceful stop may be unavailable; fall through to force.
+    }
+    try {
+      await this.#supervisor.forceStopTree(attemptId);
+    } catch {
+      // Best-effort stop for operator interrupt.
+    }
+  }
+
+  /** Used by orchestrator commandRunner hook. */
+  public emitActivityFromAgent(
+    role: Parameters<typeof formatAgentActivity>[0]['role'],
+    adapterKind: Parameters<typeof formatAgentActivity>[0]['adapterKind'],
+    event: Parameters<typeof formatAgentActivity>[0]['event'],
+  ): void {
+    const line = formatAgentActivity({ role, adapterKind, event });
+    if (line !== undefined) {
+      this.#activityListener?.(line);
+    }
+  }
+
+  public emitActivityLine(line: ReturnType<typeof renderActivityLine>): void {
+    this.#activityListener?.(line);
+  }
+
   public async dispose(): Promise<void> {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#activityListener = undefined;
+    try {
+      await this.requestStopActiveAttempt();
+    } catch {
+      // ignore
+    }
     await this.#log.close();
     rmSync(this.#probeDirectory, { recursive: true, force: true });
   }
@@ -428,6 +501,22 @@ export function createProductionTaskRuntimeFactory(
             limits: settingsToBudgetLimits(settings),
           }),
       );
+      // Runtime shell first so commandRunner hook can forward live events.
+      const runtimeShell = {
+        emit: undefined as
+          | ((
+              role: Parameters<ProductionTaskRuntime['emitActivityFromAgent']>[0],
+              adapterKind: Parameters<ProductionTaskRuntime['emitActivityFromAgent']>[1],
+              event: Parameters<ProductionTaskRuntime['emitActivityFromAgent']>[2],
+            ) => void)
+          | undefined,
+        activity: undefined as
+          | ((line: ReturnType<typeof renderActivityLine>) => void)
+          | undefined,
+      };
+      const contextHolder = {
+        get: (): readonly string[] => [],
+      };
       const orchestrator = new TaskOrchestrator({
         database: options.database,
         taskDefinition: {
@@ -449,12 +538,58 @@ export function createProductionTaskRuntimeFactory(
         // Required for Grok isolated implementer; ignored by live-project implementers.
         implementationWorkspacesDirectory:
           options.paths.implementationWorkspacesDirectory,
+        getOperatorContext: () => contextHolder.get(),
+        // Implementer conversation-id resume (same task, rework / continue).
+        agentSessions,
+        hooks: {
+          commandRunner: {
+            onAgentEvent: (context) => {
+              runtimeShell.emit?.(
+                context.role,
+                context.adapterKind,
+                context.event,
+              );
+            },
+            onLaunchMode: (info) => {
+              if (info.role !== 'implementer') return;
+              if (info.mode === 'resume' && info.conversationId !== undefined) {
+                runtimeShell.activity?.(
+                  renderActivityLine(
+                    'stage',
+                    `续聊 implementer 会话 ${String(info.conversationId).slice(0, 48)}`,
+                  ),
+                );
+              } else if (info.mode === 'resume_fallback_start') {
+                runtimeShell.activity?.(
+                  renderActivityLine(
+                    'system',
+                    'implementer 续聊失败，已开新会话',
+                  ),
+                );
+              } else if (info.mode === 'start' && info.role === 'implementer') {
+                runtimeShell.activity?.(
+                  renderActivityLine('stage', 'implementer 新开会话'),
+                );
+              }
+            },
+          },
+        },
       });
-      return new ProductionTaskRuntime({
+      const runtime = new ProductionTaskRuntime({
         orchestrator,
         log,
         probeDirectory,
+        supervisor: options.supervisor,
+        ...(input.onActivity === undefined ? {} : { onActivity: input.onActivity }),
       });
+      contextHolder.get = () => runtime.getOperatorContext();
+      runtimeShell.emit = (role, adapterKind, event) => {
+        runtime.emitActivityFromAgent(role, adapterKind, event);
+      };
+      runtimeShell.activity = (line) => {
+        runtime.emitActivityLine(line);
+      };
+      return runtime;
     } catch (error) {
       if (log !== undefined) {
         await log.close().catch(() => undefined);

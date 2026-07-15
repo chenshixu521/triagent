@@ -114,7 +114,7 @@ export interface ClaudeAdapterOptions {
 export interface MarkAttemptPersistedInput {
   readonly attemptId: AttemptId;
   readonly conversationId: ConversationId;
-  readonly exitReason?: 'completed';
+  readonly exitReason?: 'completed' | 'interrupted';
   readonly endedAt?: string;
 }
 

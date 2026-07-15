@@ -197,6 +197,13 @@ export interface ApplicationComposition {
   updateSettings(next: Partial<AppSettings>): AppSettings;
   /** True once lifecycle closed the DB (or composition.close). */
   isDatabaseClosed(): boolean;
+  /**
+   * Wire live task-progress pushes into the Ink store after render.
+   * Partial snapshots are merged with preserveUiState.
+   */
+  setTaskProgressSink?(
+    sink: ((partial: Partial<TuiSnapshot>) => void) | undefined,
+  ): void;
 }
 
 const STARTUP_ORDER: readonly StartupStageName[] = [
@@ -1190,6 +1197,15 @@ function finalizeComposition(input: FinalizeInput): ApplicationComposition {
     createRuntime:
       input.options.factories?.createTaskRuntime ?? defaultTaskRuntime,
   });
+  let taskProgressSink: ((partial: Partial<TuiSnapshot>) => void) | undefined;
+  taskSession.setProgressListener((partial) => {
+    snapshotState = {
+      ...snapshotState,
+      ...partial,
+      logs: partial.logs ?? snapshotState.logs,
+    };
+    taskProgressSink?.(partial);
+  });
   const recoveryServices = new Map<string, RestartRecoveryService>();
   const recoveryServiceFor = (taskId: TaskId): RestartRecoveryService => {
     const cached = recoveryServices.get(taskId);
@@ -1310,7 +1326,14 @@ function finalizeComposition(input: FinalizeInput): ApplicationComposition {
         };
       }
 
-      if (intent.type === 'REQUEST_EXIT') {
+      // Safe app exit.
+      // - REQUEST_EXIT: Q/Esc when idle/terminal (blocked while task still active)
+      // - CONFIRM_TERMINATION: Ctrl+C double-confirm force path — dispose session first
+      if (intent.type === 'REQUEST_EXIT' || intent.type === 'CONFIRM_TERMINATION') {
+        if (intent.type === 'CONFIRM_TERMINATION') {
+          // Force-release the live session so the operator can always leave.
+          await taskSession.dispose().catch(() => undefined);
+        }
         const taskExitGate = taskSession.exitGate();
         if (!taskExitGate.allowed) {
           return {
@@ -1319,7 +1342,9 @@ function finalizeComposition(input: FinalizeInput): ApplicationComposition {
           };
         }
         const result: LifecycleShutdownResult = await lifecycle.shutdown({
-          reason: 'REQUEST_EXIT',
+          reason: intent.type === 'CONFIRM_TERMINATION'
+            ? 'CONFIRM_TERMINATION'
+            : 'REQUEST_EXIT',
         });
         return {
           kind: 'exit_gate',
@@ -1389,11 +1414,23 @@ function finalizeComposition(input: FinalizeInput): ApplicationComposition {
         }
       }
 
+      // Live session interrupt hold ([C]/[X]/[I]) is handled by TaskSessionController.
+      // Restart recovery service only when there is no live session hold.
       if (
         intent.type === 'RECOVERY_INSPECT'
         || intent.type === 'RECOVERY_CONTINUE'
         || intent.type === 'RECOVERY_CANCEL'
       ) {
+        const liveRecovery = await taskSession.dispatch(intent);
+        if (liveRecovery !== undefined) {
+          if (liveRecovery.kind === 'snapshot') {
+            snapshotState = {
+              ...snapshotState,
+              ...liveRecovery.snapshot,
+            };
+          }
+          return liveRecovery;
+        }
         if (snapshotState.taskId !== intent.taskId) {
           return {
             kind: 'rejected',
@@ -1468,15 +1505,11 @@ function finalizeComposition(input: FinalizeInput): ApplicationComposition {
         intent.type === 'APPROVE'
         || intent.type === 'REQUEST_REWORK'
         || intent.type === 'REQUEST_CANCEL_OR_INTERRUPT'
-        || intent.type === 'CONFIRM_TERMINATION'
         || intent.type === 'REQUEST_PAUSE_AFTER_RUN'
         || intent.type === 'QUEUE_MESSAGE'
       ) {
         if (snapshotState.screen === 'recovery') {
-          if (
-            intent.type === 'REQUEST_CANCEL_OR_INTERRUPT'
-            || intent.type === 'CONFIRM_TERMINATION'
-          ) {
+          if (intent.type === 'REQUEST_CANCEL_OR_INTERRUPT') {
             return {
               kind: 'rejected',
               reason: 'recovery action must be confirmed through the control flow',
@@ -1633,6 +1666,10 @@ function finalizeComposition(input: FinalizeInput): ApplicationComposition {
     setOnAuthorizedExit?: (hook: () => void | Promise<void>) => void;
   }).setOnAuthorizedExit = (hook) => {
     input.setAuthorizedExitHook(hook);
+  };
+
+  composition.setTaskProgressSink = (sink) => {
+    taskProgressSink = sink;
   };
 
   return composition;

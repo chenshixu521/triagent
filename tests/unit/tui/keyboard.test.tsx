@@ -10,6 +10,7 @@ import {
   type ApplicationControllerPort,
   type TuiIntent,
   type TuiSnapshot,
+  type TuiStore,
 } from '../../../src/tui/store.js';
 
 function frameText(frame: string | undefined): string {
@@ -58,6 +59,7 @@ function Harness(props: {
   readonly initial: TuiSnapshot;
   readonly controller?: ApplicationControllerPort;
   readonly onIntent?: (intent: TuiIntent) => void;
+  readonly storeRef?: { current: TuiStore | null };
 }): React.ReactElement {
   const store = useMemo(
     () =>
@@ -68,6 +70,9 @@ function Harness(props: {
       }),
     [props.initial, props.controller, props.onIntent],
   );
+  if (props.storeRef) {
+    props.storeRef.current = store;
+  }
   const [snapshot, setSnapshot] = useState(store.getSnapshot());
 
   return (
@@ -609,18 +614,23 @@ describe('TUI keyboard semantics', { timeout: 15_000 }, () => {
   });
 
   it('cycles log tabs with Tab', async () => {
+    const storeRef: { current: TuiStore | null } = {
+      current: null,
+    };
     const initial = baseSnapshot({ activeLogTab: 'implementer' });
-    const { stdin, lastFrame, unmount } = render(<Harness initial={initial} />);
+    const { stdin, unmount } = render(
+      <Harness initial={initial} storeRef={storeRef} />,
+    );
 
     stdin.write('\t');
     await flushUi();
-    let text = frameText(lastFrame());
-    expect(text).toMatch(/Log:\s*reviewer/i);
+    expect(storeRef.current?.getSnapshot().activeLogTab).toBe('reviewer');
 
     stdin.write('\t');
     await flushUi();
-    text = frameText(lastFrame());
-    expect(text).toMatch(/Log:\s*system/i);
+    // system tab remains the chronological activity feed (design)
+    expect(storeRef.current?.getSnapshot().activeLogTab).toBe('system');
     unmount();
   });
 });
+

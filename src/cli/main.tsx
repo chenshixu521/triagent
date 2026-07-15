@@ -201,6 +201,12 @@ export async function defaultRender(
     controller: composition.controller,
   });
 
+  // Live task progress (stage changes, activity lines, elapsed) → Ink store.
+  // Do not preserveUiState: statusMessage/logs must update while work runs.
+  composition.setTaskProgressSink?.((partial) => {
+    store.replaceSnapshot(partial, { preserveUiState: false });
+  });
+
   let unmounted = false;
   const safeUnmount = (unmount: () => void): void => {
     if (unmounted) return;

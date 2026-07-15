@@ -1,7 +1,9 @@
 import type { AgentAdapter, AgentEvent, AgentRequest, AgentRunResult } from '../agents/agent-adapter.js';
+import { settleSessionAfterRun } from '../agents/session-lifecycle.js';
 import type { BudgetController } from '../budget/budget-controller.js';
-import type { AttemptId, TaskId } from '../domain/ids.js';
+import type { AttemptId, ConversationId, TaskId } from '../domain/ids.js';
 import type { RunExitReason } from '../domain/attempt.js';
+import type { AgentKind, AgentRole } from '../domain/task.js';
 import { JsonlLog } from '../logging/jsonl-log.js';
 import type { ReadWriteDatabase } from '../persistence/database.js';
 import { ActionRepository, type PendingAction } from '../persistence/action-repository.js';
@@ -35,6 +37,14 @@ export interface PersistedAgentRun {
   readonly logReferences: readonly LogEvidenceReference[];
 }
 
+export interface CommandRunnerAgentEventContext {
+  readonly taskId: TaskId;
+  readonly attemptId: AttemptId;
+  readonly role: AgentRole;
+  readonly adapterKind: AgentKind;
+  readonly event: AgentEvent;
+}
+
 export interface CommandRunnerHooks {
   readonly afterIntentPersisted?: (
     action: PendingAction,
@@ -42,6 +52,18 @@ export interface CommandRunnerHooks {
   readonly afterResultPersisted?: (
     result: PersistedAgentRun,
   ) => void | Promise<void>;
+  /** Live UI / activity feed: one call per agent event (after durable log append). */
+  readonly onAgentEvent?: (
+    context: CommandRunnerAgentEventContext,
+  ) => void | Promise<void>;
+  /** Fired after launch chooses start vs resume (implementer session continue). */
+  readonly onLaunchMode?: (info: {
+    readonly taskId: TaskId;
+    readonly role: AgentRole;
+    readonly mode: 'start' | 'resume' | 'resume_fallback_start';
+    readonly conversationId?: ConversationId;
+    readonly detail?: string;
+  }) => void | Promise<void>;
 }
 
 export interface RunPreparedAgentInput {
@@ -51,6 +73,11 @@ export interface RunPreparedAgentInput {
   readonly request: AgentRequest;
   /** Optional ProjectGuard decision attached to the reserved budget call. */
   readonly guardDecisionId?: string;
+  /**
+   * When set, launch via adapter.resume instead of start (implementer session
+   * continue / rework). Authorization still runs before launch.
+   */
+  readonly resumeConversationId?: ConversationId;
 }
 
 export interface AgentLaunchPreparation {
@@ -241,7 +268,51 @@ export class CommandRunner {
 
     let handle;
     try {
-      handle = await input.adapter.start(launchRequest);
+      if (input.resumeConversationId !== undefined) {
+        try {
+          handle = await input.adapter.resume(
+            input.resumeConversationId,
+            launchRequest,
+          );
+          await this.#hooks.onLaunchMode?.({
+            taskId: input.taskId,
+            role: input.request.role,
+            mode: 'resume',
+            conversationId: input.resumeConversationId,
+          });
+        } catch (resumeError) {
+          // Fail open to a fresh start when store evidence / CLI rejects resume.
+          const message =
+            resumeError instanceof Error
+              ? resumeError.message
+              : String(resumeError);
+          await this.#log.append({
+            taskId: input.taskId,
+            attemptId: input.request.attemptId,
+            stream: 'system',
+            eventType: 'resume_fallback_start',
+            payload: {
+              resumeConversationId: String(input.resumeConversationId),
+              reason: message,
+            },
+          });
+          handle = await input.adapter.start(launchRequest);
+          await this.#hooks.onLaunchMode?.({
+            taskId: input.taskId,
+            role: input.request.role,
+            mode: 'resume_fallback_start',
+            conversationId: input.resumeConversationId,
+            detail: message,
+          });
+        }
+      } else {
+        handle = await input.adapter.start(launchRequest);
+        await this.#hooks.onLaunchMode?.({
+          taskId: input.taskId,
+          role: input.request.role,
+          mode: 'start',
+        });
+      }
     } catch (error) {
       if (reservationId !== undefined && this.#budget !== undefined) {
         try {
@@ -303,6 +374,15 @@ export class CommandRunner {
           offset: appended.offset,
           checksum: appended.checksum,
         });
+        if (this.#hooks.onAgentEvent !== undefined) {
+          await this.#hooks.onAgentEvent({
+            taskId: input.taskId,
+            attemptId: input.request.attemptId,
+            role: input.request.role,
+            adapterKind: input.adapter.kind,
+            event,
+          });
+        }
       }
     })();
 
@@ -318,6 +398,16 @@ export class CommandRunner {
       this.#attempts.markCompleted(input.request.attemptId, {
         endedAt: exited.occurredAt,
         exitReason: completionReason(runResult.status),
+      });
+      // Persist conversation id for session-id resume (implementer MVP).
+      settleSessionAfterRun({
+        adapter: input.adapter,
+        attemptId: input.request.attemptId,
+        status: runResult.status,
+        ...(runResult.conversationId === undefined
+          ? {}
+          : { conversationId: runResult.conversationId }),
+        endedAt: exited.occurredAt,
       });
       if (
         reservationId !== undefined

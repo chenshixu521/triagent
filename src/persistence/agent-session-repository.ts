@@ -71,7 +71,17 @@ export interface MarkCompletedPersistedInput {
   readonly attemptId: AttemptId;
   readonly conversationId: ConversationId;
   readonly endedAt: string;
-  readonly exitReason?: Extract<AgentSessionExitReason, 'completed'>;
+  /**
+   * completed: normal success.
+   * interrupted: operator stop — still resumable for session-id continue.
+   */
+  readonly exitReason?: Extract<AgentSessionExitReason, 'completed' | 'interrupted'>;
+}
+
+export interface FindLatestForTaskRoleInput {
+  readonly taskId: TaskId;
+  readonly role: AgentRole;
+  readonly agentKind: AgentKind;
 }
 
 export interface MarkUnresumableInput {
@@ -332,9 +342,67 @@ export class AgentSessionRepository {
     return row === undefined ? undefined : sessionFromRow(row);
   }
 
+  /**
+   * Latest session for a task role that may be resumed (implementer MVP).
+   * Prefers completed_persisted+resumable; falls back to active rows that
+   * already have a conversation_id (start issued a session id).
+   */
+  public findLatestForTaskRole(
+    input: FindLatestForTaskRoleInput,
+  ): AgentSessionRecord | undefined {
+    const row = this.database
+      .prepare(
+        `SELECT
+           id, task_id, role, agent_kind, conversation_id,
+           attempt_id, adapter_version, adapter_platform, mode,
+           permission_profile_hash, guard_decision_id, status,
+           exit_reason, last_attempt_id, resumable,
+           started_at, last_used_at, ended_at
+         FROM agent_sessions
+         WHERE task_id = ?
+           AND role = ?
+           AND agent_kind = ?
+           AND conversation_id IS NOT NULL
+           AND (
+             (status = 'completed_persisted' AND resumable = 1)
+             OR status = 'active'
+           )
+         ORDER BY
+           CASE status
+             WHEN 'completed_persisted' THEN 0
+             WHEN 'active' THEN 1
+             ELSE 2
+           END,
+           COALESCE(ended_at, last_used_at, started_at) DESC
+         LIMIT 1`,
+      )
+      .get(input.taskId, input.role, input.agentKind) as SessionRow | undefined;
+    return row === undefined ? undefined : sessionFromRow(row);
+  }
+
   public getById(sessionId: string): AgentSessionRecord | undefined {
     const row = this.#getById(sessionId);
     return row === undefined ? undefined : sessionFromRow(row);
+  }
+
+  /**
+   * Promote an active session to completed_persisted so interrupt/continue can
+   * resume via conversation id (operator stop mid-turn).
+   */
+  public promoteActiveToResumable(input: {
+    readonly sessionId: string;
+    readonly attemptId: AttemptId;
+    readonly conversationId: ConversationId;
+    readonly endedAt: string;
+    readonly exitReason?: Extract<AgentSessionExitReason, 'completed' | 'interrupted'>;
+  }): AgentSessionRecord {
+    return this.markCompletedAndPersisted({
+      sessionId: input.sessionId,
+      attemptId: input.attemptId,
+      conversationId: input.conversationId,
+      endedAt: input.endedAt,
+      exitReason: input.exitReason ?? 'interrupted',
+    });
   }
 
   #getById(sessionId: string): SessionRow | undefined {
