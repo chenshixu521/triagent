@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://triagent.local/schemas/agent-patch-result.schema.json",
+  "title": "TriAgent Agent Patch Result",
+  "description": "Strict structured patch result for read-only patch_mode. PatchApplier is the sole writer after Task 9 validation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "summary",
+    "changedFiles",
+    "commandsRun",
+    "verification",
+    "issues",
+    "nextAction",
+    "unifiedDiff",
+    "requestedCommands"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["completed", "needs_rework", "failed"]
+    },
+    "summary": { "type": "string", "minLength": 1, "pattern": "\\S" },
+    "changedFiles": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "pattern": "\\S" }
+    },
+    "commandsRun": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "pattern": "\\S" }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "details"],
+      "properties": {
+        "passed": { "type": "boolean" },
+        "details": { "type": "string", "minLength": 1, "pattern": "\\S" }
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "message"],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["critical", "major", "minor"]
+          },
+          "message": { "type": "string", "minLength": 1, "pattern": "\\S" },
+          "file": { "type": "string", "minLength": 1, "pattern": "\\S" },
+          "line": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "nextAction": {
+      "type": "string",
+      "enum": [
+        "approve_plan",
+        "implement",
+        "review",
+        "master_validation",
+        "rework",
+        "complete",
+        "await_user"
+      ]
+    },
+    "unifiedDiff": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S",
+      "description": "Unified diff for PatchApplier; agent must not write project files."
+    },
+    "requestedCommands": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "pattern": "\\S" },
+      "description": "Verification commands requested for ProjectGuard mediation (not executed by the agent)."
+    }
+  }
+}

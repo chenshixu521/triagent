@@ -1,0 +1,4 @@
+{"type":"item.completed","item":{"type":"agent_message","text":"partial line will be split in test"}
+not-json-at-all
+{"type":"result","conversationId":"conversation-partial","output":{"status":"completed","summary":"ok","changedFiles":[],"commandsRun":[],"verification":{"passed":true,"details":"ok"},"issues":[],"nextAction":"review"}}
+{"type":"result","output":{"status":"failed","summary":"bad schema only","changedFiles":[],"commandsRun":[],"verification":{"passed":false},"issues":[],"nextAction":"await_user"}}

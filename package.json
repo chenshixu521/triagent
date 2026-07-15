@@ -1,0 +1,55 @@
+{
+  "name": "triagent-orchestrator",
+  "version": "0.1.0",
+  "description": "A Windows-first terminal orchestrator for three collaborating agents.",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "triagent": "./dist/cli.js"
+  },
+  "files": [
+    "dist/cli.js",
+    "dist/cli.js.map",
+    "dist/migrations/*.sql",
+    "dist/native/win-x64/triagent-process-host.exe",
+    "dist/native/win-x64/checksum-metadata.json",
+    "dist/native/win-x64/triagent-process-host.sha256",
+    "schemas/agent-result.schema.json",
+    "schemas/agent-patch-result.schema.json",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build:native": "node scripts/run-locked-step.mjs native",
+    "build:trust": "node scripts/run-locked-step.mjs trust",
+    "build:node": "node scripts/run-locked-step.mjs node",
+    "build:copy-native": "node scripts/run-locked-step.mjs copy",
+    "build": "node scripts/run-build.mjs",
+    "prepack": "node scripts/run-prepack.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:packaging-stress": "vitest run tests/unit/scripts/build-lock-concurrency.test.ts",
+    "test:watch": "vitest",
+    "start": "node dist/cli.js",
+    "dev": "tsx src/cli/main.tsx"
+  },
+  "dependencies": {
+    "chokidar": "^5.0.0",
+    "ink": "^7.1.0",
+    "react": "^19.2.7",
+    "strip-ansi": "^7.2.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.17",
+    "fast-check": "^4.9.0",
+    "ink-testing-library": "^4.0.0",
+    "tsx": "^4.20.0",
+    "tsup": "^8.5.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}

@@ -1,0 +1,3 @@
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"partial start"}]}}
+this is not json Authorization: Bearer sk-xai-super-secret-token-value-xyz
+{"type":"result","subtype":"success","session_id":"bbbbbbbb-cccc-4ddd-8eee-ffffffffffff","structured_output":{"status":"completed","summary":"done","changedFiles":[],"commandsRun":[],"verification":{"passed":true,"details":"ok"},"issues":[],"nextAction":"complete"}}

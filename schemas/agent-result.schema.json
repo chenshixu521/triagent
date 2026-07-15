@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://triagent.local/schemas/agent-result.schema.json",
+  "title": "TriAgent Agent Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "summary",
+    "changedFiles",
+    "commandsRun",
+    "verification",
+    "issues",
+    "nextAction"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["completed", "needs_rework", "failed"]
+    },
+    "summary": { "type": "string", "minLength": 1, "pattern": "\\S" },
+    "changedFiles": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "pattern": "\\S" }
+    },
+    "commandsRun": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "pattern": "\\S" }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "details"],
+      "properties": {
+        "passed": { "type": "boolean" },
+        "details": { "type": "string", "minLength": 1, "pattern": "\\S" }
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "message"],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["critical", "major", "minor"]
+          },
+          "message": { "type": "string", "minLength": 1, "pattern": "\\S" },
+          "file": { "type": "string", "minLength": 1, "pattern": "\\S" },
+          "line": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "nextAction": {
+      "type": "string",
+      "enum": [
+        "approve_plan",
+        "implement",
+        "review",
+        "master_validation",
+        "rework",
+        "complete",
+        "await_user"
+      ]
+    }
+  }
+}

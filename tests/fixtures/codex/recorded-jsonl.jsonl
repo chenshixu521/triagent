@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"thread-sanitized-001","timestamp":"2026-07-12T12:00:00.000Z"}
+{"type":"turn.started","turn_id":"turn-1"}
+{"type":"item.completed","item":{"type":"agent_message","text":"Planning the change without secrets."}}
+{"type":"item.completed","item":{"type":"command_execution","command":"npm.cmd test","exit_code":0}}
+{"type":"unknown.future_event","payload":{"note":"retain me as raw","count":2}}
+{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":20}}
+{"type":"result","conversationId":"conversation-sanitized-001","output":{"status":"completed","summary":"Implemented the requested change","changedFiles":["src/example.ts"],"commandsRun":["npm.cmd test"],"verification":{"passed":true,"details":"tests passed"},"issues":[],"nextAction":"review"}}

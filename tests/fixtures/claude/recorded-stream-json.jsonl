@@ -1,0 +1,6 @@
+{"type":"system","subtype":"init","session_id":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","cwd":"/sanitized/project","tools":["Read","Glob","Grep"]}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Planning the change without secrets."}]},"session_id":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"continue"}]},"session_id":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Review complete; no file writes."}]},"session_id":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}
+{"type":"unknown.future_event","payload":{"note":"retain me as raw","count":2}}
+{"type":"result","subtype":"success","session_id":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","is_error":false,"result":"Implemented the requested change","structured_output":{"status":"completed","summary":"Implemented the requested change","changedFiles":["src/example.ts"],"commandsRun":["npm.cmd test"],"verification":{"passed":true,"details":"tests passed"},"issues":[],"nextAction":"review"}}
