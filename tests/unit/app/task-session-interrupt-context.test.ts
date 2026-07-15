@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import {
   createTaskSessionController,
@@ -37,7 +37,8 @@ describe('TaskSessionController interrupt + context', () => {
     });
     const contextOnRuntime: string[] = [];
     let stopCalls = 0;
-    let startCount = 0;
+    let continueCalls = 0;
+    let createRuntimeCalls = 0;
 
     const makeRuntime = (): TaskRuntimePort => ({
       initialize() {
@@ -47,14 +48,19 @@ describe('TaskSessionController interrupt + context', () => {
         return makeTask(state);
       },
       async start() {
-        startCount += 1;
         state = 'planning';
+        // Stay mid-flight until interrupt supersedes this drive.
         await startGate;
-        state = 'awaiting_plan_approval';
         return makeTask(state).workflowSnapshot;
       },
       async approvePlan() {
         state = 'implementing';
+        return makeTask(state).workflowSnapshot;
+      },
+      async continueAfterOperatorHold() {
+        continueCalls += 1;
+        // Same task: re-enter planning after operator interrupt settle.
+        state = 'planning';
         return makeTask(state).workflowSnapshot;
       },
       async dispose() {
@@ -76,7 +82,10 @@ describe('TaskSessionController interrupt + context', () => {
     const controller = createTaskSessionController({
       ownerInstanceId: 'instance-hold',
       progressPollMs: 20,
-      createRuntime: async () => makeRuntime(),
+      createRuntime: async () => {
+        createRuntimeCalls += 1;
+        return makeRuntime();
+      },
       onProgress: (partial) => {
         progress.push(partial);
       },
@@ -113,7 +122,7 @@ describe('TaskSessionController interrupt + context', () => {
     expect(queued?.kind).toBe('snapshot');
     expect(contextOnRuntime).toContain('改用 TypeScript，并加单元测试');
 
-    // Release original start so it does not hang the process.
+    // Unblock superseded start so continue can await drivePromise.
     resolveStart();
 
     const continued = await controller.dispatch({
@@ -122,12 +131,98 @@ describe('TaskSessionController interrupt + context', () => {
     });
     expect(continued?.kind).toBe('snapshot');
     if (continued?.kind !== 'snapshot') throw new Error('expected continue snapshot');
-    // Continue either resumes run UI or recreates drive.
+    // Same-task continue: keep task id, do not create a second runtime.
+    expect(continued.snapshot.taskId).toBe('task-hold-1');
+    expect(continueCalls).toBeGreaterThanOrEqual(1);
+    expect(createRuntimeCalls).toBe(1);
     expect(
       continued.snapshot.screen === 'run'
-      || continued.snapshot.screen === 'plan_approval'
-      || continued.snapshot.statusMessage?.includes('继续'),
+      || continued.snapshot.statusMessage?.includes('同任务'),
     ).toBe(true);
+
+    await controller.dispose();
+  });
+
+  it('same-task continue does not recreate when mid-flight after interrupt', async () => {
+    let state: WorkflowState = 'implementing';
+    let continueCalls = 0;
+    let createRuntimeCalls = 0;
+    const taskId = 'task-same-1';
+    let resolveStart!: () => void;
+    const startGate = new Promise<void>((resolve) => {
+      resolveStart = resolve;
+    });
+
+    const runtime: TaskRuntimePort = {
+      initialize() {
+        /* no-op */
+      },
+      currentTask() {
+        return makeTask(state, taskId);
+      },
+      async start() {
+        await startGate;
+        return makeTask(state, taskId).workflowSnapshot;
+      },
+      async approvePlan() {
+        throw new Error('not used');
+      },
+      async continueAfterOperatorHold() {
+        continueCalls += 1;
+        state = 'implementing';
+        return makeTask(state, taskId).workflowSnapshot;
+      },
+      async dispose() {
+        /* no-op */
+      },
+      async requestStopActiveAttempt() {
+        // Unblock superseded drive so continue can await drivePromise.
+        resolveStart();
+      },
+      queueContextMessage() {
+        /* no-op */
+      },
+    };
+
+    const controller = createTaskSessionController({
+      ownerInstanceId: 'instance-same',
+      progressPollMs: 20,
+      createRuntime: async () => {
+        createRuntimeCalls += 1;
+        return runtime;
+      },
+    });
+
+    await controller.dispatch({
+      type: 'SELECT_PROJECT',
+      projectPath: process.cwd(),
+    });
+    // Seed controller with active runtime without going through draft start hang.
+    // CREATE_TASK would call start in background; we interrupt quickly.
+    void controller.dispatch({
+      type: 'CREATE_TASK',
+      requirements: 'implement feature',
+      roles: { master: 'claude', implementer: 'grok', reviewer: 'codex' },
+      requiresPlanApproval: false,
+    });
+    await new Promise((r) => setTimeout(r, 30));
+
+    await controller.dispatch({ type: 'REQUEST_CANCEL_OR_INTERRUPT' });
+    await controller.dispatch({
+      type: 'QUEUE_MESSAGE',
+      text: '优先修复测试',
+    });
+
+    const continued = await controller.dispatch({
+      type: 'RECOVERY_CONTINUE',
+      taskId,
+    });
+    expect(continued?.kind).toBe('snapshot');
+    if (continued?.kind !== 'snapshot') throw new Error('expected snapshot');
+    expect(continued.snapshot.taskId).toBe(taskId);
+    expect(continueCalls).toBe(1);
+    expect(createRuntimeCalls).toBe(1);
+    expect(continued.snapshot.statusMessage).toMatch(/同任务/);
 
     await controller.dispose();
   });

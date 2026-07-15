@@ -299,6 +299,8 @@ export async function executeProductionRecoveryEffects(
       launchPreparer,
       implementationWorkspacesDirectory:
         options.paths.implementationWorkspacesDirectory,
+      processSupervisor: options.supervisor,
+      cleanupGracePeriodMs: 1_000,
     });
     await orchestrator.executePreparedEffects(input.effects);
   } finally {
@@ -344,6 +346,12 @@ class ProductionTaskRuntime implements TaskRuntimePort {
 
   public approvePlan(): ReturnType<TaskOrchestrator['approvePlan']> {
     return this.#orchestrator.approvePlan();
+  }
+
+  public continueAfterOperatorHold(): ReturnType<
+    TaskOrchestrator['continueAfterOperatorHold']
+  > {
+    return this.#orchestrator.continueAfterOperatorHold();
   }
 
   public setActivityListener(listener: TaskActivityListener | undefined): void {
@@ -541,6 +549,8 @@ export function createProductionTaskRuntimeFactory(
         getOperatorContext: () => contextHolder.get(),
         // Implementer conversation-id resume (same task, rework / continue).
         agentSessions,
+        processSupervisor: options.supervisor,
+        cleanupGracePeriodMs: 1_000,
         hooks: {
           commandRunner: {
             onAgentEvent: (context) => {

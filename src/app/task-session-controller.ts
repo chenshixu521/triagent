@@ -29,6 +29,11 @@ export interface TaskRuntimePort {
   start(): Promise<WorkflowSnapshot>;
   approvePlan(): Promise<WorkflowSnapshot>;
   dispose(): Promise<void>;
+  /**
+   * Same-task continue after operator interrupt hold.
+   * Must keep the existing taskId (no recreate).
+   */
+  continueAfterOperatorHold?(): Promise<WorkflowSnapshot>;
   /** Optional: live agent/stage activity for the work-status feed. */
   setActivityListener?(listener: TaskActivityListener | undefined): void;
   /** Stop the active agent attempt (graceful then force). */
@@ -678,7 +683,7 @@ export class TaskSessionController {
     if (task !== undefined && task.taskId !== taskId) return undefined;
 
     this.#operatorHold = false;
-    this.#pushActivity(renderActivityLine('stage', '用户选择继续 — 携带上下文恢复'));
+    this.#pushActivity(renderActivityLine('stage', '用户选择继续 — 同任务恢复（携带上下文）'));
     if (this.#contextMessages.length > 0) {
       this.#pushActivity(
         renderActivityLine(
@@ -688,16 +693,61 @@ export class TaskSessionController {
       );
     }
 
-    // If runtime still has a usable non-terminal task past draft, resume UI on it.
-    if (task !== undefined && task.status === 'awaiting_plan_approval') {
+    // Let the interrupted drive finish settling workflow state (failed/inspection).
+    if (this.#drivePromise !== undefined) {
+      await Promise.race([
+        this.#drivePromise.catch(() => undefined),
+        new Promise<void>((resolve) => {
+          setTimeout(resolve, 15_000);
+        }),
+      ]);
+    }
+
+    // Last resort only: runtime truly gone (dispose / crash of session shell).
+    if (this.#runtime === undefined || this.#runtimeDisposed) {
+      this.#pushActivity(
+        renderActivityLine(
+          'system',
+          '运行时已丢失 — 无法同任务续跑，将用保留上下文新建任务',
+        ),
+      );
+      return this.#recreateAndStartAfterContinue();
+    }
+
+    const runtime = this.#runtime;
+    let current: PersistedTask;
+    try {
+      current = runtime.currentTask();
+    } catch (error) {
+      this.#pushActivity(
+        renderActivityLine(
+          'system',
+          `读取任务失败: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+      return this.#recreateAndStartAfterContinue();
+    }
+
+    if (current.taskId !== taskId) {
+      return rejected(`continue task id mismatch: expected ${taskId}, got ${current.taskId}`);
+    }
+
+    if (isTerminalState(current.status)) {
+      return rejected(
+        `cannot continue terminal task ${current.taskId} in state ${current.status}`,
+      );
+    }
+
+    // Plan already ready — stay on same task, show approval UI.
+    if (current.status === 'awaiting_plan_approval') {
       const snap = taskSnapshot(
-        task,
+        current,
         this.#selectedProject.project.canonicalRoot,
         this.#roles,
         {
           logs: this.#activityLogs,
           activityLines: this.#activityLines,
-          statusMessage: '继续：等待计划确认',
+          statusMessage: '继续：等待计划确认（同一任务）',
           elapsedLabel:
             this.#startedAtMs === undefined
               ? undefined
@@ -708,26 +758,24 @@ export class TaskSessionController {
       return { kind: 'snapshot', snapshot: snap };
     }
 
-    // Soft continue: restart a new drive with the same requirements + context
-    // already queued on the runtime (or recreate if runtime is gone).
-    if (this.#runtime === undefined || this.#runtimeDisposed) {
-      return this.#recreateAndStartAfterContinue();
-    }
-
-    // Previous drive was aborted; re-drive approve if still awaiting, else restart.
-    try {
-      const current = this.#runtime.currentTask();
-      if (current.status === 'awaiting_plan_approval') {
-        this.#startBackgroundDrive(this.#runtime, this.#roles, 'approve');
-      } else if (current.status === 'draft') {
-        this.#startBackgroundDrive(this.#runtime, this.#roles, 'start');
-      } else if (!isTerminalState(current.status)) {
-        // Mid-flight after kill: recreate for a clean stage boundary with context.
-        return this.#recreateAndStartAfterContinue();
-      } else {
-        return this.#recreateAndStartAfterContinue();
-      }
-    } catch {
+    // Preferred path: same runtime + same taskId.
+    if (runtime.continueAfterOperatorHold !== undefined) {
+      this.#pushActivity(
+        renderActivityLine(
+          'stage',
+          `同任务继续 ${current.taskId}（状态 ${current.status}）`,
+        ),
+      );
+      this.#startBackgroundDrive(runtime, this.#roles, 'continue');
+    } else if (current.status === 'draft') {
+      this.#startBackgroundDrive(runtime, this.#roles, 'start');
+    } else {
+      this.#pushActivity(
+        renderActivityLine(
+          'system',
+          '运行时不支持同任务继续 — 回退为新建任务',
+        ),
+      );
       return this.#recreateAndStartAfterContinue();
     }
 
@@ -735,8 +783,10 @@ export class TaskSessionController {
       screen: 'run' as const,
       loading: true,
       processRunning: true,
+      taskId: current.taskId,
+      workflowState: current.status,
       recoveryAllowedActions: Object.freeze([] as const),
-      statusMessage: '已继续 — 工作流恢复中',
+      statusMessage: `已继续 — 同任务 ${current.taskId} 恢复中`,
       logs: this.#activityLogs,
       activityLines: this.#activityLines,
     };
@@ -793,7 +843,7 @@ export class TaskSessionController {
         forceRunScreen: true,
         logs: this.#activityLogs,
         activityLines: this.#activityLines,
-        statusMessage: '已继续 — 使用保留上下文重新驱动',
+        statusMessage: '已继续 — 运行时丢失后新建任务（保留上下文）',
         elapsedLabel:
           this.#startedAtMs === undefined
             ? undefined
@@ -914,7 +964,7 @@ export class TaskSessionController {
   #startBackgroundDrive(
     runtime: TaskRuntimePort,
     roles: RoleAssignment,
-    mode: 'start' | 'approve',
+    mode: 'start' | 'approve' | 'continue',
   ): void {
     const generation = ++this.#driveGeneration;
 
@@ -932,8 +982,13 @@ export class TaskSessionController {
       try {
         if (mode === 'start') {
           await runtime.start();
-        } else {
+        } else if (mode === 'approve') {
           await runtime.approvePlan();
+        } else {
+          if (runtime.continueAfterOperatorHold === undefined) {
+            throw new Error('runtime does not support same-task continue');
+          }
+          await runtime.continueAfterOperatorHold();
         }
         publish();
       } catch (error) {

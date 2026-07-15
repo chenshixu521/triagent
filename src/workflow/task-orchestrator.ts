@@ -63,6 +63,7 @@ import {
   WorkspacePromotionService,
   type CanonicalFileFingerprint,
 } from '../workspace/workspace-promotion-service.js';
+import type { ProcessSupervisorPort } from '../process/process-supervisor-port.js';
 import {
   CommandRunner,
   type AgentLaunchPreparer,
@@ -74,8 +75,28 @@ import {
   transition,
   type Transitioned,
 } from './workflow-engine.js';
-import type { WorkflowSnapshot } from './states.js';
+import {
+  isSafeExecutionState,
+  isTerminalState,
+  type SafeExecutionState,
+  type WorkflowSnapshot,
+} from './states.js';
 import type { WorkflowEffect, WorkflowEvent } from './transitions.js';
+
+export type ProcessTreeVerification =
+  | { readonly clean: true }
+  | { readonly clean: false; readonly reason: string };
+
+function isUnsupervisedAttemptError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /not supervised|unknown attempt|no active|not found/i.test(message);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 export type OrchestratorIdKind =
   | 'action'
@@ -127,6 +148,24 @@ export interface TaskOrchestratorOptions {
    * Store-backed agent sessions for implementer conversation-id resume (MVP).
    */
   readonly agentSessions?: AgentSessionRepository;
+  /**
+   * Process supervisor used by BeginProcessCleanup (INTERRUPT / CANCEL with
+   * an active attempt). Optional for pure offline fixtures that never interrupt.
+   */
+  readonly processSupervisor?: ProcessSupervisorPort;
+  /** Grace window after cooperative stop before force (ms). Default 0. */
+  readonly cleanupGracePeriodMs?: number;
+  /**
+   * Test seam: advance a fake clock so FakeProcessSupervisor cleanup plans settle.
+   */
+  readonly advanceCleanupClock?: (milliseconds: number) => void;
+  /**
+   * Optional fail-closed tree verification after force stop.
+   * When omitted, cleanup treats successful force (or unsupervised) as clean.
+   */
+  readonly verifyProcessTreeGone?: (
+    attemptId: AttemptId,
+  ) => ProcessTreeVerification | Promise<ProcessTreeVerification>;
 }
 
 interface PreparedEffect {
@@ -362,6 +401,14 @@ export class TaskOrchestrator {
   readonly #implementationWorkspacesDirectory: string | undefined;
   readonly #getOperatorContext: (() => readonly string[]) | undefined;
   readonly #agentSessions: AgentSessionRepository | undefined;
+  readonly #processSupervisor: ProcessSupervisorPort | undefined;
+  readonly #cleanupGracePeriodMs: number;
+  readonly #advanceCleanupClock: ((milliseconds: number) => void) | undefined;
+  readonly #verifyProcessTreeGone:
+    | ((
+        attemptId: AttemptId,
+      ) => ProcessTreeVerification | Promise<ProcessTreeVerification>)
+    | undefined;
   readonly #workspaces: ImplementationWorkspaceRepository;
   #taskBaselineId?: string;
   #lockId?: string;
@@ -426,6 +473,10 @@ export class TaskOrchestrator {
     this.#hooks = options.hooks ?? {};
     this.#getOperatorContext = options.getOperatorContext;
     this.#agentSessions = options.agentSessions;
+    this.#processSupervisor = options.processSupervisor;
+    this.#cleanupGracePeriodMs = options.cleanupGracePeriodMs ?? 0;
+    this.#advanceCleanupClock = options.advanceCleanupClock;
+    this.#verifyProcessTreeGone = options.verifyProcessTreeGone;
   }
 
   public initialize(): void {
@@ -491,6 +542,126 @@ export class TaskOrchestrator {
     const baselineId = this.#nextBaselineId();
     this.#persistPlanApproval(attemptId);
     return this.#applyEvent({ type: 'PLAN_APPROVED', attemptId, baselineId });
+  }
+
+  /**
+   * Workflow-level interrupt: transitions to interrupting, runs
+   * BeginProcessCleanup, then interrupted_needs_inspection (or cleanup_failed).
+   */
+  public async requestInterrupt(): Promise<WorkflowSnapshot> {
+    const task = this.currentTask();
+    if (task.workflowSnapshot.activeAttemptId === undefined) {
+      throw new Error('interrupt requires an active attempt');
+    }
+    if (!isSafeExecutionState(task.status as SafeExecutionState)) {
+      throw new Error(
+        `interrupt is not valid while workflow is ${task.status}`,
+      );
+    }
+    return this.#applyEvent({ type: 'INTERRUPT' });
+  }
+
+  /**
+   * Same-task operator continue after mid-run interrupt ([Q] hold → [C]).
+   * Never creates a new taskId. Settles a killed stage when needed, then
+   * re-drives the resume target (enabling implementer conversation resume).
+   */
+  public async continueAfterOperatorHold(): Promise<WorkflowSnapshot> {
+    let task = this.currentTask();
+    if (isTerminalState(task.status)) {
+      throw new Error(
+        `cannot continue a terminal task in state ${task.status}`,
+      );
+    }
+
+    // Mid-flight after process stop: settle the active stage as operator interrupt.
+    if (
+      isSafeExecutionState(task.status as SafeExecutionState)
+      && task.workflowSnapshot.activeAttemptId !== undefined
+    ) {
+      const attemptId = asAttemptId(task.workflowSnapshot.activeAttemptId);
+      const settleEvent = this.#operatorInterruptSettleEvent(
+        task.status as SafeExecutionState,
+        attemptId,
+      );
+      try {
+        await this.#applyEvent(settleEvent);
+      } catch (error) {
+        // Concurrent drive may already have settled this attempt.
+        const message = error instanceof Error ? error.message : String(error);
+        if (!/rejected|does not match|illegal|Terminal/i.test(message)) {
+          throw error;
+        }
+      }
+      task = this.currentTask();
+    }
+
+    if (task.status === 'draft') {
+      return this.start();
+    }
+    if (task.status === 'awaiting_plan_approval') {
+      return task.workflowSnapshot;
+    }
+    if (task.status === 'paused_after_run') {
+      return this.#applyEvent({ type: 'RESUME' });
+    }
+    if (task.status === 'checking_environment') {
+      // Soft retry: re-enter environment check via awaiting-user retry is not
+      // available here; START is invalid. Surface for operator cancel/recreate.
+      throw new Error(
+        'cannot continue while still checking environment — cancel and recreate if stuck',
+      );
+    }
+    if (
+      task.status === 'awaiting_user'
+      && task.workflowSnapshot.allowedAwaitingActions?.includes('continue')
+    ) {
+      const attemptId = this.#nextAttemptId();
+      const baselineId = this.#nextBaselineId();
+      return this.#applyEvent({
+        type: 'AWAITING_USER_CONTINUE',
+        attemptId,
+        baselineId,
+      });
+    }
+    if (task.status === 'interrupted_needs_inspection') {
+      const attemptId = this.#nextAttemptId();
+      const baselineId = this.#nextBaselineId();
+      return this.#applyEvent({
+        type: 'INSPECTION_CONTINUE',
+        attemptId,
+        baselineId,
+      });
+    }
+    if (task.status === 'rework_requested') {
+      // PersistReworkRequest path is driven by effects already in flight; if we
+      // land here after interrupt, re-drive via a fresh implement attempt after
+      // treating rework as inspection resume target is not automatic — surface.
+      throw new Error(
+        'cannot auto-continue rework_requested — use recovery continue after rework context is persisted',
+      );
+    }
+
+    throw new Error(
+      `cannot continue from workflow state ${task.status}`,
+    );
+  }
+
+  #operatorInterruptSettleEvent(
+    state: SafeExecutionState,
+    attemptId: AttemptId,
+  ): WorkflowEvent {
+    const reason = 'operator interrupt — stage stopped; same-task continue requested';
+    switch (state) {
+      case 'planning':
+        return { type: 'PLAN_FAILED', attemptId, reason };
+      case 'implementing':
+        return { type: 'IMPLEMENTATION_FAILED', attemptId, reason };
+      case 'reviewing':
+        return { type: 'REVIEW_FAILED', attemptId, reason };
+      case 'master_validation':
+        return { type: 'MASTER_FAILED', attemptId, reason };
+    }
   }
 
   public async executePreparedEffects(
@@ -776,11 +947,92 @@ export class TaskOrchestrator {
         await this.#persistReworkRequest(prepared);
         return;
       case 'BeginProcessCleanup':
-        throw new Error('process cleanup execution is not implemented yet');
+        await this.#beginProcessCleanup(prepared);
+        return;
       case 'ReleaseProjectLock':
         this.#releaseProjectLock(prepared);
         return;
     }
+  }
+
+  /**
+   * Execute process-cleanup for INTERRUPT / CANCEL: cooperative stop, optional
+   * grace, force tree stop, optional verification, then PROCESS_TREE_CLEAN or
+   * PROCESS_CLEANUP_FAILED. Completes the process-cleanup pending action.
+   */
+  async #beginProcessCleanup(prepared: PreparedEffect): Promise<void> {
+    if (prepared.effect.type !== 'BeginProcessCleanup') {
+      throw new Error('prepared effect is not BeginProcessCleanup');
+    }
+    const { attemptId, stopIntent } = prepared.effect;
+    let failureReason: string | undefined;
+
+    if (this.#processSupervisor !== undefined) {
+      try {
+        await this.#processSupervisor.requestGracefulStop(attemptId);
+      } catch (error) {
+        if (!isUnsupervisedAttemptError(error)) {
+          // Cooperative stop failed; still attempt force.
+          failureReason = undefined;
+        }
+      }
+
+      const grace = this.#cleanupGracePeriodMs;
+      if (this.#advanceCleanupClock !== undefined) {
+        this.#advanceCleanupClock(Math.max(grace, 1));
+      } else if (grace > 0) {
+        await delay(grace);
+      }
+
+      try {
+        await this.#processSupervisor.forceStopTree(attemptId);
+        if (this.#advanceCleanupClock !== undefined) {
+          this.#advanceCleanupClock(Math.max(2, Math.floor(grace / 5) || 2));
+        }
+      } catch (error) {
+        if (!isUnsupervisedAttemptError(error)) {
+          failureReason =
+            `force Job close failed: ${error instanceof Error ? error.message : String(error)}`;
+        }
+      }
+
+      if (this.#verifyProcessTreeGone !== undefined) {
+        try {
+          const tree = await this.#verifyProcessTreeGone(attemptId);
+          if (!tree.clean) {
+            failureReason =
+              `process tree cleanup verification failed: ${tree.reason}`;
+          } else {
+            failureReason = undefined;
+          }
+        } catch (error) {
+          failureReason =
+            `tree verification failed closed: ${error instanceof Error ? error.message : String(error)}`;
+        }
+      } else if (failureReason !== undefined) {
+        // No verifier: if force threw but process may already be gone, leave
+        // failureReason set so we fail closed rather than claim clean.
+      }
+    }
+
+    if (failureReason !== undefined) {
+      this.#actions.markFailed(prepared.actionId, { error: failureReason });
+      await this.#applyEvent({
+        type: 'PROCESS_CLEANUP_FAILED',
+        reason: failureReason,
+      });
+      return;
+    }
+
+    this.#actions.markCompleted(prepared.actionId, {
+      result: {
+        attemptId,
+        stopIntent,
+        status:
+          stopIntent === 'cancel' ? 'cancelled' : 'interrupted_needs_inspection',
+      },
+    });
+    await this.#applyEvent({ type: 'PROCESS_TREE_CLEAN' });
   }
 
   #acquireProjectLock(prepared: PreparedEffect): void {
