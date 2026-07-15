@@ -475,6 +475,185 @@ describe('Isolated Grok implementation workflow routing', () => {
     });
   }, 45_000);
 
+  it('interrupts mid-implement, continues same task, reuses candidate workspace with fresh authorization', async () => {
+    const root = temporaryDirectory();
+    const projectRoot = join(root, 'canonical-project');
+    const snapshots = join(root, 'snapshots');
+    const logs = join(root, 'logs');
+    const workspaces = join(root, 'implementation-workspaces');
+    mkdirSync(projectRoot);
+    mkdirSync(snapshots);
+    mkdirSync(logs);
+    mkdirSync(workspaces);
+    writeFileSync(join(projectRoot, 'README.md'), '# canonical\n', 'utf8');
+
+    const opened = openDatabase(join(root, 'triagent.sqlite'));
+    openedDatabases.push(opened);
+    const database = requireReadWrite(opened);
+    const log = await JsonlLog.open({
+      directory: logs,
+      fileName: 'isolated-interrupt-continue.jsonl',
+      database: database.connection,
+      projectRoot,
+    });
+    openedLogs.push(log);
+
+    const taskId = asTaskId('task-isolated-interrupt-continue');
+    const clock = new FakeClock('2026-07-15T07:00:00.000Z');
+    // plan(attempt-1) -> implement hang(attempt-2) interrupt
+    // -> continue implement(attempt-3) -> review(attempt-4) -> master(attempt-5)
+    const supervisor = new FakeProcessSupervisor(clock, [
+      successfulProcess('attempt-1', 9101, result('Plan', 'implement')),
+      {
+        pid: 9102,
+        timeline: [{ afterMs: 1, event: { type: 'started', pid: 9102 } }],
+        gracefulStop: { afterMs: 1, outcome: 'succeeded', exitCode: null },
+        forceStop: { afterMs: 1, outcome: 'succeeded', exitCode: 1 },
+      },
+      successfulProcess('attempt-3', 9103, result('Impl after continue', 'review')),
+      successfulProcess('attempt-4', 9104, result('Codex approve', 'master_validation')),
+      successfulProcess('attempt-5', 9105, result('Master ok', 'complete')),
+    ]);
+
+    const adapters = {
+      master: new FakeAdapter({
+        kind: 'claude',
+        supervisor,
+        cliPath: 'D:\\fixtures\\fake-cli.mjs',
+        scenarioPath: 'D:\\fixtures\\master.json',
+        tempBasePath: root,
+      }),
+      implementer: new FakeAdapter({
+        kind: 'grok',
+        supervisor,
+        cliPath: 'D:\\fixtures\\fake-cli.mjs',
+        scenarioPath: 'D:\\fixtures\\implementer.json',
+        tempBasePath: root,
+      }),
+      reviewer: new FakeAdapter({
+        kind: 'codex',
+        supervisor,
+        cliPath: 'D:\\fixtures\\fake-cli.mjs',
+        scenarioPath: 'D:\\fixtures\\reviewer.json',
+        tempBasePath: root,
+      }),
+    };
+
+    const orchestrator = new TaskOrchestrator({
+      database,
+      taskDefinition: {
+        taskId,
+        requirementVersion: 1,
+        roles: { master: 'claude', implementer: 'grok', reviewer: 'codex' },
+      },
+      projectId: 'project-isolated-interrupt-continue',
+      projectRoot,
+      requirements: 'Create a smoke file in candidate workspace.',
+      tracker: new NonGitBaselineService({ projectRoot, snapshotStore: snapshots }),
+      adapters,
+      log,
+      ownerInstanceId: 'instance-interrupt-continue',
+      requiresPlanApproval: false,
+      implementationWorkspacesDirectory: workspaces,
+      idFactory: deterministicIds(),
+      now: () => new Date(clock.now()),
+      processSupervisor: supervisor,
+      cleanupGracePeriodMs: 2,
+      advanceCleanupClock: (ms) => clock.advanceBy(ms),
+      verifyProcessTreeGone: (attemptId) => {
+        const live = supervisor.activeProcessIds(attemptId);
+        return live.length === 0
+          ? { clean: true }
+          : { clean: false, reason: `pids still live: ${live.join(',')}` };
+      },
+    });
+    orchestrator.initialize();
+
+    const running = orchestrator.start();
+    // Plan completes.
+    await waitForStarts(supervisor, 1, running);
+    clock.advanceBy(3);
+    // First implement starts and hangs.
+    await waitForStarts(supervisor, 2, running);
+    clock.advanceBy(1);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(orchestrator.currentTask().status).toBe('implementing');
+
+    const firstPrepare = database.connection
+      .prepare(
+        `SELECT result_json AS resultJson FROM pending_actions
+         WHERE task_id = ? AND action_type = 'prepare-implementation-workspace'
+           AND status = 'completed'
+         ORDER BY created_at ASC LIMIT 1`,
+      )
+      .get(taskId) as { readonly resultJson: string } | undefined;
+    expect(firstPrepare).toBeDefined();
+    const firstPrep = JSON.parse(firstPrepare!.resultJson) as {
+      readonly workspaceRoot: string;
+      readonly authorizationId: string;
+      readonly reused?: boolean;
+    };
+    expect(firstPrep.reused).not.toBe(true);
+    expect(existsSync(firstPrep.workspaceRoot)).toBe(true);
+
+    await orchestrator.requestInterrupt();
+    expect(orchestrator.currentTask().status).toBe('interrupted_needs_inspection');
+    expect(orchestrator.currentTask().workflowSnapshot.resumeTargetState).toBe(
+      'implementing',
+    );
+    expect(orchestrator.currentTask().taskId).toBe(taskId);
+
+    // Continue same task: re-prepare should reuse candidate + rebind auth.
+    const continued = orchestrator.continueAfterOperatorHold();
+    await waitForStarts(supervisor, 3, continued);
+    clock.advanceBy(3);
+    await waitForStarts(supervisor, 4, continued);
+    clock.advanceBy(3);
+    await waitForStarts(supervisor, 5, continued);
+    clock.advanceBy(3);
+
+    await expect(continued).resolves.toMatchObject({ state: 'completed' });
+    await running.catch(() => undefined);
+
+    const prepareRows = database.connection
+      .prepare(
+        `SELECT result_json AS resultJson FROM pending_actions
+         WHERE task_id = ? AND action_type = 'prepare-implementation-workspace'
+           AND status = 'completed'
+         ORDER BY created_at ASC, id ASC`,
+      )
+      .all(taskId) as unknown as Array<{ readonly resultJson: string }>;
+    expect(prepareRows.length).toBeGreaterThanOrEqual(2);
+    const secondPrep = JSON.parse(prepareRows[1]!.resultJson) as {
+      readonly workspaceRoot: string;
+      readonly authorizationId: string;
+      readonly reused?: boolean;
+      readonly attemptId?: string;
+    };
+    expect(secondPrep.reused).toBe(true);
+    expect(secondPrep.workspaceRoot).toBe(firstPrep.workspaceRoot);
+    expect(secondPrep.authorizationId).not.toBe(firstPrep.authorizationId);
+    expect(secondPrep.attemptId).toBe('attempt-3');
+
+    const workspaceRow = database.connection
+      .prepare(
+        `SELECT attempt_id AS attemptId, authorization_id AS authorizationId, status
+         FROM implementation_workspaces
+         WHERE task_id = ?
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(taskId) as unknown as {
+      readonly attemptId: string;
+      readonly authorizationId: string;
+      readonly status: string;
+    };
+    // After promote, status is promoted; attempt was rebound for continue.
+    expect(workspaceRow.authorizationId).toBe(secondPrep.authorizationId);
+    expect(['promoted', 'ready', 'under_review', 'candidate_ready', 'approved']).toContain(
+      workspaceRow.status,
+    );
+  }, 60_000);
+
   it('fails environment when the requested Grok implementer adapter is unavailable (no substitution)', async () => {
     const root = temporaryDirectory();
     const projectRoot = join(root, 'project');

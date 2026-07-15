@@ -1413,6 +1413,17 @@ export class TaskOrchestrator {
     }
   }
 
+  #isReusableWorkspaceStatus(status: string): boolean {
+    return (
+      status === 'candidate_ready'
+      || status === 'under_review'
+      || status === 'running'
+      || status === 'ready'
+      || status === 'approved'
+      || status === 'recovery_required'
+    );
+  }
+
   #findReusableCandidateWorkspace(taskId: string): {
     readonly workspaceId: string;
     readonly workspaceRoot: string;
@@ -1427,14 +1438,24 @@ export class TaskOrchestrator {
       if (
         record !== undefined
         && record.taskId === taskId
-        && (
-          record.status === 'candidate_ready'
-          || record.status === 'under_review'
-          || record.status === 'running'
-          || record.status === 'ready'
-          || record.status === 'approved'
-          || record.status === 'recovery_required'
-        )
+        && this.#isReusableWorkspaceStatus(record.status)
+      ) {
+        return {
+          workspaceId: record.workspaceId,
+          workspaceRoot: record.workspaceRoot,
+          sourceManifestHash: record.sourceManifestHash,
+        };
+      }
+    }
+
+    // Durable fallback: same-task continue / rework after memory loss still
+    // reuses the latest non-terminal candidate directory when present on disk.
+    const durable = this.#workspaces.listByTaskId(taskId);
+    for (let index = durable.length - 1; index >= 0; index -= 1) {
+      const record = durable[index]!;
+      if (
+        this.#isReusableWorkspaceStatus(record.status)
+        && existsSync(record.workspaceRoot)
       ) {
         return {
           workspaceId: record.workspaceId,
