@@ -1949,18 +1949,31 @@ export class TaskOrchestrator {
   }
 
   /**
-   * Implementer MVP: resume the latest store-backed conversation when present.
-   * Master/reviewer always start a fresh context for independence.
+   * Resume the latest store-backed conversation for any role when present.
+   * Resume failure falls back to a fresh start inside CommandRunner.
    */
-  #resolveImplementerResumeConversation(): ConversationId | undefined {
+  #resolveRoleResumeConversation(role: AgentRole): ConversationId | undefined {
     if (this.#agentSessions === undefined) return undefined;
-    const agentKind = this.#taskDefinition.roles.implementer;
+    const agentKind = this.#taskDefinition.roles[role];
     const found = this.#agentSessions.findLatestForTaskRole({
       taskId: this.#taskDefinition.taskId,
-      role: 'implementer',
+      role,
       agentKind,
     });
     return found?.conversationId;
+  }
+
+  /**
+   * Best-effort mid-run delivery to the active agent handle (real-time input).
+   * When unsupported or idle, callers keep durable next-stage context.
+   */
+  public tryDeliverOperatorMessage(text: string): Promise<
+    | { readonly status: 'delivered'; readonly role: AgentRole; readonly attemptId: AttemptId }
+    | { readonly status: 'accepted_queued'; readonly role: AgentRole; readonly attemptId: AttemptId }
+    | { readonly status: 'idle' }
+    | { readonly status: 'failed'; readonly error: string }
+  > {
+    return this.#commandRunner.trySendActiveMessage(text);
   }
 
   async #runStage(prepared: PreparedEffect, effect: StartEffect): Promise<void> {
@@ -1972,10 +1985,7 @@ export class TaskOrchestrator {
         `adapter substitution denied: role ${effect.role} requires ${expectedKind}, got ${adapter.kind}`,
       );
     }
-    const resumeConversationId =
-      effect.role === 'implementer'
-        ? this.#resolveImplementerResumeConversation()
-        : undefined;
+    const resumeConversationId = this.#resolveRoleResumeConversation(effect.role);
     const request: AgentRequest = {
       attemptId: effect.attemptId,
       baselineId: effect.baselineId,

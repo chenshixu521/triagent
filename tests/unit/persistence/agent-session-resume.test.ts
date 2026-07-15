@@ -35,7 +35,7 @@ function openMemoryDb(): DatabaseSync {
   return db;
 }
 
-describe('AgentSessionRepository implementer resume lookup', () => {
+describe('AgentSessionRepository role resume lookup', () => {
   it('finds latest completed_persisted session for task+role', () => {
     const db = openMemoryDb();
     const sessions = new AgentSessionRepository(db);
@@ -84,6 +84,75 @@ describe('AgentSessionRepository implementer resume lookup', () => {
     expect(found?.conversationId).toBe(conv);
     expect(found?.resumable).toBe(true);
     expect(found?.status).toBe('completed_persisted');
+
+    const masterFound = sessions.findLatestForTaskRole({
+      taskId,
+      role: 'master',
+      agentKind: 'claude',
+    });
+    expect(masterFound?.conversationId).toBe(asConversationId('conv-master'));
+  });
+
+  it('finds reviewer and master sessions independently', () => {
+    const db = openMemoryDb();
+    const sessions = new AgentSessionRepository(db);
+    const taskId = asTaskId('task-resume-roles');
+    sessions.create({
+      sessionId: 'sess-master-2',
+      taskId,
+      role: 'master',
+      agentKind: 'claude',
+      conversationId: asConversationId('conv-m2'),
+      attemptId: asAttemptId('a-m'),
+      startedAt: '2026-01-01T00:00:00.000Z',
+      status: 'active',
+    });
+    sessions.markCompletedAndPersisted({
+      sessionId: 'sess-master-2',
+      attemptId: asAttemptId('a-m'),
+      conversationId: asConversationId('conv-m2'),
+      endedAt: '2026-01-01T00:01:00.000Z',
+      exitReason: 'completed',
+    });
+    sessions.create({
+      sessionId: 'sess-review-2',
+      taskId,
+      role: 'reviewer',
+      agentKind: 'codex',
+      conversationId: asConversationId('conv-r2'),
+      attemptId: asAttemptId('a-r'),
+      startedAt: '2026-01-01T00:02:00.000Z',
+      status: 'active',
+    });
+    sessions.markCompletedAndPersisted({
+      sessionId: 'sess-review-2',
+      attemptId: asAttemptId('a-r'),
+      conversationId: asConversationId('conv-r2'),
+      endedAt: '2026-01-01T00:03:00.000Z',
+      exitReason: 'completed',
+    });
+
+    expect(
+      sessions.findLatestForTaskRole({
+        taskId,
+        role: 'master',
+        agentKind: 'claude',
+      })?.conversationId,
+    ).toBe(asConversationId('conv-m2'));
+    expect(
+      sessions.findLatestForTaskRole({
+        taskId,
+        role: 'reviewer',
+        agentKind: 'codex',
+      })?.conversationId,
+    ).toBe(asConversationId('conv-r2'));
+    expect(
+      sessions.findLatestForTaskRole({
+        taskId,
+        role: 'implementer',
+        agentKind: 'grok',
+      }),
+    ).toBeUndefined();
   });
 
   it('promotes interrupted active session to resumable', () => {

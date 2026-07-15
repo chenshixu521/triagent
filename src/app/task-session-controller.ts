@@ -38,8 +38,18 @@ export interface TaskRuntimePort {
   setActivityListener?(listener: TaskActivityListener | undefined): void;
   /** Stop the active agent attempt (graceful then force). */
   requestStopActiveAttempt?(): Promise<void>;
-  /** Queue operator mid-run context for subsequent stage prompts. */
-  queueContextMessage?(text: string): void;
+  /**
+   * Queue operator mid-run context for subsequent stage prompts.
+   * May also attempt live mid-turn delivery when an agent handle is active.
+   */
+  queueContextMessage?(
+    text: string,
+  ):
+    | void
+    | Promise<{
+        readonly delivery: 'live' | 'next_stage' | 'handle_queued';
+        readonly detail?: string;
+      }>;
   /** Snapshot of queued operator context (for UI / continue). */
   peekContextMessages?(): readonly string[];
 }
@@ -644,13 +654,39 @@ export class TaskSessionController {
       return rejected('no active task to receive context');
     }
     this.#contextMessages.push(body);
-    this.#runtime?.queueContextMessage?.(body);
+    let delivery: 'live' | 'next_stage' | 'handle_queued' = 'next_stage';
+    let deliveryDetail: string | undefined;
+    const queued = this.#runtime?.queueContextMessage?.(body);
+    if (queued !== undefined && typeof (queued as Promise<unknown>).then === 'function') {
+      const result = await queued;
+      if (result !== undefined && typeof result === 'object' && 'delivery' in result) {
+        delivery = result.delivery;
+        deliveryDetail = result.detail;
+      }
+    }
     this.#pushActivity(renderActivityLine('system', `用户上下文: ${body.slice(0, 160)}`));
-    this.#pushActivity(
-      renderActivityLine('stage', '上下文已入队，将注入后续阶段提示词'),
-    );
+    if (delivery === 'live') {
+      this.#pushActivity(
+        renderActivityLine(
+          'stage',
+          `上下文已实时投递到当前代理${deliveryDetail === undefined ? '' : `（${deliveryDetail}）`}`,
+        ),
+      );
+    } else if (delivery === 'handle_queued') {
+      this.#pushActivity(
+        renderActivityLine(
+          'stage',
+          '当前代理无实时输入能力：已入队会话侧，并将注入后续阶段提示词',
+        ),
+      );
+    } else {
+      this.#pushActivity(
+        renderActivityLine('stage', '上下文已入队，将注入后续阶段提示词'),
+      );
+    }
     const partial: Partial<TuiSnapshot> = {
-      statusMessage: '上下文消息已入队',
+      statusMessage:
+        delivery === 'live' ? '上下文已实时投递' : '上下文消息已入队',
       logs: this.#activityLogs,
       activityLines: this.#activityLines,
     };

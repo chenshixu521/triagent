@@ -1,4 +1,5 @@
 import type { AgentAdapter, AgentEvent, AgentRequest, AgentRunResult } from '../agents/agent-adapter.js';
+import type { ExecutionHandle } from '../agents/execution-handle.js';
 import { settleSessionAfterRun } from '../agents/session-lifecycle.js';
 import type { BudgetController } from '../budget/budget-controller.js';
 import type { AttemptId, ConversationId, TaskId } from '../domain/ids.js';
@@ -56,7 +57,7 @@ export interface CommandRunnerHooks {
   readonly onAgentEvent?: (
     context: CommandRunnerAgentEventContext,
   ) => void | Promise<void>;
-  /** Fired after launch chooses start vs resume (implementer session continue). */
+  /** Fired after launch chooses start vs resume (any role session continue). */
   readonly onLaunchMode?: (info: {
     readonly taskId: TaskId;
     readonly role: AgentRole;
@@ -66,6 +67,20 @@ export interface CommandRunnerHooks {
   }) => void | Promise<void>;
 }
 
+export type ActiveMessageSendResult =
+  | {
+      readonly status: 'delivered';
+      readonly role: AgentRole;
+      readonly attemptId: AttemptId;
+    }
+  | {
+      readonly status: 'accepted_queued';
+      readonly role: AgentRole;
+      readonly attemptId: AttemptId;
+    }
+  | { readonly status: 'idle' }
+  | { readonly status: 'failed'; readonly error: string };
+
 export interface RunPreparedAgentInput {
   readonly actionId: string;
   readonly taskId: TaskId;
@@ -74,8 +89,8 @@ export interface RunPreparedAgentInput {
   /** Optional ProjectGuard decision attached to the reserved budget call. */
   readonly guardDecisionId?: string;
   /**
-   * When set, launch via adapter.resume instead of start (implementer session
-   * continue / rework). Authorization still runs before launch.
+   * When set, launch via adapter.resume instead of start (session continue /
+   * rework for any role). Authorization still runs before launch.
    */
   readonly resumeConversationId?: ConversationId;
 }
@@ -150,6 +165,13 @@ export class CommandRunner {
   readonly #hooks: CommandRunnerHooks;
   readonly #budget: BudgetController | undefined;
   readonly #launchPreparer: AgentLaunchPreparer | undefined;
+  #activeRun:
+    | {
+        readonly handle: ExecutionHandle;
+        readonly role: AgentRole;
+        readonly attemptId: AttemptId;
+      }
+    | undefined;
 
   public constructor(options: {
     readonly database: ReadWriteDatabase;
@@ -166,6 +188,50 @@ export class CommandRunner {
     this.#hooks = options.hooks ?? {};
     this.#budget = options.budget;
     this.#launchPreparer = options.launchPreparer;
+  }
+
+  /**
+   * Mid-run operator message to the live agent handle when one is active.
+   * Real CLIs without realTimeInput accept the message as handle-local queued
+   * state only; callers must still keep durable next-stage context.
+   */
+  public async trySendActiveMessage(
+    content: string,
+  ): Promise<ActiveMessageSendResult> {
+    const body = content.trim();
+    if (body.length === 0) {
+      return { status: 'failed', error: 'message body must be non-empty' };
+    }
+    const active = this.#activeRun;
+    if (active === undefined) {
+      return { status: 'idle' };
+    }
+    try {
+      const message = await active.handle.sendMessage(body);
+      if (message.state === 'delivered' || message.state === 'acknowledged' || message.state === 'applied') {
+        return {
+          status: 'delivered',
+          role: active.role,
+          attemptId: active.attemptId,
+        };
+      }
+      if (message.state === 'failed') {
+        return {
+          status: 'failed',
+          error: message.error ?? 'active agent rejected mid-run message',
+        };
+      }
+      return {
+        status: 'accepted_queued',
+        role: active.role,
+        attemptId: active.attemptId,
+      };
+    } catch (error) {
+      return {
+        status: 'failed',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   public async runPreparedAgent(
@@ -331,6 +397,12 @@ export class CommandRunner {
       this.#budget.markLaunched(reservationId);
     }
 
+    this.#activeRun = {
+      handle,
+      role: input.request.role,
+      attemptId: input.request.attemptId,
+    };
+
     let started: StartedEvidence | undefined;
     let exited: ExitedEvidence | undefined;
     const logReferences: LogEvidenceReference[] = [];
@@ -399,7 +471,7 @@ export class CommandRunner {
         endedAt: exited.occurredAt,
         exitReason: completionReason(runResult.status),
       });
-      // Persist conversation id for session-id resume (implementer MVP).
+      // Persist conversation id for session-id resume (any role).
       settleSessionAfterRun({
         adapter: input.adapter,
         attemptId: input.request.attemptId,
@@ -433,6 +505,10 @@ export class CommandRunner {
       const reason = error instanceof Error ? error.message : String(error);
       this.#actions.markFailed(input.actionId, { error: reason });
       throw error;
+    } finally {
+      if (this.#activeRun?.attemptId === input.request.attemptId) {
+        this.#activeRun = undefined;
+      }
     }
 
     const commandRecord: CommandEvidenceRecord = {

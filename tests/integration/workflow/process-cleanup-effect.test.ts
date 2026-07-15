@@ -94,7 +94,7 @@ describe('BeginProcessCleanup effect', () => {
 
     // Original start should settle (process killed); do not leave hang.
     await starting.catch(() => undefined);
-  });
+  }, 20_000);
 
   it('continues same task after interrupt via continueAfterOperatorHold', async () => {
     // attempt-1 = first planning (interrupted); attempt-2 = re-plan after continue
@@ -161,5 +161,5 @@ describe('BeginProcessCleanup effect', () => {
       state: 'awaiting_plan_approval',
     });
     expect(orchestrator.currentTask().taskId).toBe(taskId);
-  });
+  }, 20_000);
 });

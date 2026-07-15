@@ -343,7 +343,7 @@ export class AgentSessionRepository {
   }
 
   /**
-   * Latest session for a task role that may be resumed (implementer MVP).
+   * Latest session for a task role that may be resumed (any role).
    * Prefers completed_persisted+resumable; falls back to active rows that
    * already have a conversation_id (start issued a session id).
    */

@@ -227,6 +227,65 @@ describe('TaskSessionController interrupt + context', () => {
     await controller.dispose();
   });
 
+  it('queues context with live delivery status when runtime supports it', async () => {
+    const deliveries: string[] = [];
+    let resolveStart!: () => void;
+    const startGate = new Promise<void>((resolve) => {
+      resolveStart = resolve;
+    });
+    const runtime: TaskRuntimePort = {
+      initialize() {},
+      currentTask() {
+        return makeTask('implementing', 'task-live-ctx');
+      },
+      async start() {
+        await startGate;
+        return makeTask('implementing', 'task-live-ctx').workflowSnapshot;
+      },
+      async approvePlan() {
+        throw new Error('not used');
+      },
+      async dispose() {
+        resolveStart();
+      },
+      async queueContextMessage(text: string) {
+        deliveries.push(text);
+        return {
+          delivery: 'live' as const,
+          detail: 'implementer/attempt-1',
+        };
+      },
+    };
+
+    const controller = createTaskSessionController({
+      ownerInstanceId: 'instance-live-ctx',
+      progressPollMs: 20,
+      createRuntime: async () => runtime,
+    });
+    await controller.dispatch({
+      type: 'SELECT_PROJECT',
+      projectPath: process.cwd(),
+    });
+    void controller.dispatch({
+      type: 'CREATE_TASK',
+      requirements: 'live context',
+      roles: { master: 'claude', implementer: 'grok', reviewer: 'codex' },
+      requiresPlanApproval: false,
+    });
+    await new Promise((r) => setTimeout(r, 30));
+
+    const queued = await controller.dispatch({
+      type: 'QUEUE_MESSAGE',
+      text: '请改用 async/await',
+    });
+    expect(queued?.kind).toBe('snapshot');
+    if (queued?.kind !== 'snapshot') throw new Error('expected snapshot');
+    expect(queued.snapshot.statusMessage).toBe('上下文已实时投递');
+    expect(deliveries).toContain('请改用 async/await');
+    resolveStart();
+    await controller.dispose();
+  });
+
   it('cancel after interrupt disposes and lands on cancelled review', async () => {
     let state: WorkflowState = 'planning';
     const runtime: TaskRuntimePort = {

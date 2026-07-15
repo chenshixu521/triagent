@@ -36,6 +36,7 @@ import {
   TaskOrchestrator,
   type PreparedWorkflowEffectIntent,
 } from '../workflow/task-orchestrator.js';
+import { MessageQueue } from '../workflow/message-queue.js';
 import { SafeAgentLaunchCoordinator } from './safe-agent-launch-coordinator.js';
 import {
   formatAgentActivity,
@@ -314,6 +315,7 @@ class ProductionTaskRuntime implements TaskRuntimePort {
   readonly #log: JsonlLog;
   readonly #probeDirectory: string;
   readonly #supervisor: ProcessSupervisorPort;
+  readonly #messageQueue: MessageQueue | undefined;
   readonly #contextMessages: string[] = [];
   #disposed = false;
   #activityListener: TaskActivityListener | undefined;
@@ -323,12 +325,14 @@ class ProductionTaskRuntime implements TaskRuntimePort {
     readonly log: JsonlLog;
     readonly probeDirectory: string;
     readonly supervisor: ProcessSupervisorPort;
+    readonly messageQueue?: MessageQueue;
     readonly onActivity?: TaskActivityListener;
   }) {
     this.#orchestrator = input.orchestrator;
     this.#log = input.log;
     this.#probeDirectory = input.probeDirectory;
     this.#supervisor = input.supervisor;
+    this.#messageQueue = input.messageQueue;
     this.#activityListener = input.onActivity;
   }
 
@@ -358,10 +362,50 @@ class ProductionTaskRuntime implements TaskRuntimePort {
     this.#activityListener = listener;
   }
 
-  public queueContextMessage(text: string): void {
+  public async queueContextMessage(text: string): Promise<{
+    readonly delivery: 'live' | 'next_stage' | 'handle_queued';
+    readonly detail?: string;
+  }> {
     const body = text.trim();
-    if (body.length === 0) return;
+    if (body.length === 0) {
+      return { delivery: 'next_stage', detail: 'empty ignored' };
+    }
     this.#contextMessages.push(body);
+
+    // Durable user_messages row when table/runtime is available.
+    try {
+      const task = this.#orchestrator.currentTask();
+      const attemptId = task.workflowSnapshot.activeAttemptId;
+      this.#messageQueue?.enqueue({
+        taskId: task.taskId,
+        body,
+        kind: 'operational',
+        ...(attemptId === undefined ? {} : { attemptId: asAttemptId(attemptId) }),
+      });
+    } catch {
+      // Best-effort durability; in-memory context still retained.
+    }
+
+    // Mid-turn attempt when a live agent handle is active.
+    const live = await this.#orchestrator.tryDeliverOperatorMessage(body);
+    if (live.status === 'delivered') {
+      return {
+        delivery: 'live',
+        detail: `${live.role}/${String(live.attemptId)}`,
+      };
+    }
+    if (live.status === 'accepted_queued') {
+      return {
+        delivery: 'handle_queued',
+        detail: `${live.role}/${String(live.attemptId)}`,
+      };
+    }
+    if (live.status === 'failed') {
+      this.#activityListener?.(
+        renderActivityLine('system', `实时投递失败，已保留到下一阶段: ${live.error}`),
+      );
+    }
+    return { delivery: 'next_stage' };
   }
 
   public peekContextMessages(): readonly string[] {
@@ -561,35 +605,40 @@ export function createProductionTaskRuntimeFactory(
               );
             },
             onLaunchMode: (info) => {
-              if (info.role !== 'implementer') return;
+              const roleLabel = info.role;
               if (info.mode === 'resume' && info.conversationId !== undefined) {
                 runtimeShell.activity?.(
                   renderActivityLine(
                     'stage',
-                    `续聊 implementer 会话 ${String(info.conversationId).slice(0, 48)}`,
+                    `续聊 ${roleLabel} 会话 ${String(info.conversationId).slice(0, 48)}`,
                   ),
                 );
               } else if (info.mode === 'resume_fallback_start') {
                 runtimeShell.activity?.(
                   renderActivityLine(
                     'system',
-                    'implementer 续聊失败，已开新会话',
+                    `${roleLabel} 续聊失败，已开新会话`,
                   ),
                 );
-              } else if (info.mode === 'start' && info.role === 'implementer') {
+              } else if (info.mode === 'start') {
                 runtimeShell.activity?.(
-                  renderActivityLine('stage', 'implementer 新开会话'),
+                  renderActivityLine('stage', `${roleLabel} 新开会话`),
                 );
               }
             },
           },
         },
       });
+      const messageQueue = new MessageQueue({
+        database: options.database,
+        now,
+      });
       const runtime = new ProductionTaskRuntime({
         orchestrator,
         log,
         probeDirectory,
         supervisor: options.supervisor,
+        messageQueue,
         ...(input.onActivity === undefined ? {} : { onActivity: input.onActivity }),
       });
       contextHolder.get = () => runtime.getOperatorContext();
