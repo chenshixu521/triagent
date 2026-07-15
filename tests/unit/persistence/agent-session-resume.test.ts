@@ -155,6 +155,38 @@ describe('AgentSessionRepository role resume lookup', () => {
     ).toBeUndefined();
   });
 
+  it('marks completed master sessions as completed_persisted (not auto-resumed by orchestrator policy)', () => {
+    const db = openMemoryDb();
+    const sessions = new AgentSessionRepository(db);
+    const taskId = asTaskId('task-master-completed');
+    sessions.create({
+      sessionId: 'sess-plan',
+      taskId,
+      role: 'master',
+      agentKind: 'claude',
+      conversationId: asConversationId('conv-plan-only'),
+      attemptId: asAttemptId('a-plan'),
+      startedAt: '2026-01-01T00:00:00.000Z',
+      status: 'active',
+    });
+    const done = sessions.markCompletedAndPersisted({
+      sessionId: 'sess-plan',
+      attemptId: asAttemptId('a-plan'),
+      conversationId: asConversationId('conv-plan-only'),
+      endedAt: '2026-01-01T00:01:00.000Z',
+      exitReason: 'completed',
+    });
+    expect(done.exitReason).toBe('completed');
+    expect(done.resumable).toBe(true);
+    const found = sessions.findLatestForTaskRole({
+      taskId,
+      role: 'master',
+      agentKind: 'claude',
+    });
+    // Repository still returns the row; orchestrator policy skips completed master.
+    expect(found?.exitReason).toBe('completed');
+  });
+
   it('promotes interrupted active session to resumable', () => {
     const db = openMemoryDb();
     const sessions = new AgentSessionRepository(db);

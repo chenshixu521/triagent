@@ -1949,8 +1949,11 @@ export class TaskOrchestrator {
   }
 
   /**
-   * Resume the latest store-backed conversation for any role when present.
-   * Resume failure falls back to a fresh start inside CommandRunner.
+   * Resume store-backed conversations with role-safe policy:
+   * - implementer: prefer latest resumable/completed session (rework continuity)
+   * - master/reviewer: only resume interrupted sessions — never reuse a
+   *   successfully completed planning conversation for master_validation, etc.
+   * Resume launch failure still falls back to a fresh start in CommandRunner.
    */
   #resolveRoleResumeConversation(role: AgentRole): ConversationId | undefined {
     if (this.#agentSessions === undefined) return undefined;
@@ -1960,7 +1963,15 @@ export class TaskOrchestrator {
       role,
       agentKind,
     });
-    return found?.conversationId;
+    if (found?.conversationId === undefined) return undefined;
+    if (role === 'implementer') {
+      return found.conversationId;
+    }
+    // master / reviewer: only continue after operator interrupt mid-stage.
+    if (found.exitReason === 'interrupted' || found.status === 'active') {
+      return found.conversationId;
+    }
+    return undefined;
   }
 
   /**
