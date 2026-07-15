@@ -31,7 +31,10 @@ export type RecoveryIdKind = 'action' | 'attempt' | 'baseline';
 export interface RecoveryEffectIntent {
   readonly actionId: string;
   readonly idempotencyKey: string;
-  readonly actionType: 'create-attempt-baseline' | 'agent-run';
+  readonly actionType:
+    | 'create-attempt-baseline'
+    | 'prepare-implementation-workspace'
+    | 'agent-run';
   readonly effect: Exclude<WorkflowEffect, { readonly type: 'PersistTransition' }>;
 }
 
@@ -153,6 +156,9 @@ function actionTypeForEffect(
   effect: RecoveryEffectIntent['effect'],
 ): RecoveryEffectIntent['actionType'] {
   if (effect.type === 'CreateAttemptBaseline') return 'create-attempt-baseline';
+  if (effect.type === 'PrepareImplementationWorkspace') {
+    return 'prepare-implementation-workspace';
+  }
   if (
     effect.type === 'StartPlanning'
     || effect.type === 'StartImplementation'
@@ -327,12 +333,27 @@ export class RestartRecoveryService {
       actionType: actionTypeForEffect(effect),
       effect,
     } satisfies RecoveryEffectIntent));
+    const baselineCount = effectIntents.filter(
+      (intent) => intent.actionType === 'create-attempt-baseline',
+    ).length;
+    const agentRunCount = effectIntents.filter(
+      (intent) => intent.actionType === 'agent-run',
+    ).length;
+    const prepareCount = effectIntents.filter(
+      (intent) => intent.actionType === 'prepare-implementation-workspace',
+    ).length;
+    // implementing includes optional PrepareImplementationWorkspace for Grok isolation.
     if (
-      effectIntents.length !== 2
-      || effectIntents.filter((intent) => intent.actionType === 'create-attempt-baseline').length !== 1
-      || effectIntents.filter((intent) => intent.actionType === 'agent-run').length !== 1
+      baselineCount !== 1
+      || agentRunCount !== 1
+      || prepareCount > 1
+      || effectIntents.length !== baselineCount + agentRunCount + prepareCount
     ) {
-      return this.#blocked(task, 'continue must create exactly one baseline and one agent-run intent', evidence);
+      return this.#blocked(
+        task,
+        'continue must create exactly one baseline, one agent-run intent, and at most one prepare-workspace intent',
+        evidence,
+      );
     }
 
     const actionId = this.#nextId('action');

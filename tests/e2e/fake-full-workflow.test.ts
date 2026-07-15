@@ -229,17 +229,19 @@ describe('packaged acceptance: fake complete workflow', () => {
       },
     });
 
-    const planning = composition.dispatch({
+    const created = await composition.dispatch({
       type: 'CREATE_TASK',
       requirements: 'Implement calculate(left, right) so it returns their sum.',
       roles: { master: 'codex', implementer: 'claude', reviewer: 'grok' },
       requiresPlanApproval: true,
     });
-    await waitForStarts(fixture.supervisor, 1, planning);
-    fixture.clock.advanceBy(1);
-    await expect(planning).resolves.toMatchObject({
+    // CREATE_TASK returns immediately on the work-status screen; planning drives in background.
+    expect(created).toMatchObject({
       kind: 'snapshot',
-      snapshot: { workflowState: 'awaiting_plan_approval' },
+      snapshot: {
+        screen: 'run',
+        loading: true,
+      },
     });
     expect(runtimeInputs).toHaveLength(1);
     expect(runtimeInputs[0]).toMatchObject({
@@ -248,10 +250,32 @@ describe('packaged acceptance: fake complete workflow', () => {
       requiresPlanApproval: true,
     });
 
+    await waitForStarts(fixture.supervisor, 1);
+    fixture.clock.advanceBy(5);
+    // Wait for background start() to settle into plan approval.
+    {
+      const deadline = Date.now() + 15_000;
+      let status = 'draft';
+      while (Date.now() < deadline) {
+        const row = fixture.database.connection
+          .prepare(`SELECT status AS status FROM tasks WHERE id = ?`)
+          .get(taskId) as { readonly status: string } | undefined;
+        status = row?.status ?? 'missing';
+        if (status === 'awaiting_plan_approval') break;
+        fixture.clock.advanceBy(1);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(status).toBe('awaiting_plan_approval');
+    }
+
     let implementationRound = 0;
-    const running = composition.dispatch({ type: 'APPROVE' });
+    const approved = await composition.dispatch({ type: 'APPROVE' });
+    expect(approved).toMatchObject({
+      kind: 'snapshot',
+      snapshot: { loading: true },
+    });
     for (let expectedStarts = 2; expectedStarts <= 7; expectedStarts += 1) {
-      await waitForStarts(fixture.supervisor, expectedStarts, running);
+      await waitForStarts(fixture.supervisor, expectedStarts);
       const starts = fixture.supervisor.calls.filter((call) => call.type === 'start');
       const current = starts[expectedStarts - 1];
       if (
@@ -266,16 +290,39 @@ describe('packaged acceptance: fake complete workflow', () => {
           writeFileSync(join(fixture.repository, 'src', 'calculate.ts'), contents, 'utf8');
         });
       }
-      fixture.clock.advanceBy(1);
+      fixture.clock.advanceBy(3);
     }
 
-    await expect(running).resolves.toMatchObject({
-      kind: 'snapshot',
-      snapshot: {
-        workflowState: 'completed',
-        reworkCount: 1,
-      },
-    });
+    // Background approve drive settles asynchronously — poll durable task status.
+    {
+      const deadline = Date.now() + 30_000;
+      let status = 'unknown';
+      let reworkCount = 0;
+      while (Date.now() < deadline) {
+        const row = fixture.database.connection
+          .prepare(
+            `SELECT status AS status, workflow_snapshot AS snapshotJson
+             FROM tasks WHERE id = ?`,
+          )
+          .get(taskId) as
+          | { readonly status: string; readonly snapshotJson: string }
+          | undefined;
+        status = row?.status ?? 'missing';
+        if (row?.snapshotJson !== undefined) {
+          try {
+            const snap = JSON.parse(row.snapshotJson) as { reworkCount?: number };
+            reworkCount = snap.reworkCount ?? 0;
+          } catch {
+            reworkCount = 0;
+          }
+        }
+        if (status === 'completed' && reworkCount === 1) break;
+        fixture.clock.advanceBy(1);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(status).toBe('completed');
+      expect(reworkCount).toBe(1);
+    }
 
     const transitions = fixture.database.connection
       .prepare(
@@ -720,6 +767,7 @@ describe('packaged acceptance: fake complete workflow', () => {
     expect(executedRecoveryEffects).toHaveLength(1);
     expect(executedRecoveryEffects[0]?.map((effect) => effect.effect.type)).toEqual([
       'CreateAttemptBaseline',
+      'PrepareImplementationWorkspace',
       'StartImplementation',
     ]);
     expect(await recovery.continueAfterInspection(taskId)).toMatchObject({
