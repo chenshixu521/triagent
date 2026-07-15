@@ -1,20 +1,20 @@
-# TriAgent Orchestrator
+# TriAgent 编排器
 
-Windows-first terminal orchestrator that coordinates three collaborating coding agents (planner / implementer / reviewer roles) through a supervised workflow. Durable state lives outside your project tree; every real agent process is supervised by a native Windows Job Object helper.
+面向 Windows 的终端编排工具：通过受监管的工作流，协调三个协作编码代理（规划 / 实施 / 审查角色）。持久状态存放在项目树之外；每一次真实代理进程都由原生 Windows Job Object 辅助程序监管。
 
-This is **best-effort** orchestration with explicit guardrails and limits. It does **not** promise a perfect sandbox, code signing of the helper, perfect security isolation, or complete protection against a malicious or compromised CLI.
+这是带有明确护栏与限额的 **尽力而为（best-effort）** 编排。它 **不** 承诺完美沙箱、辅助程序代码签名、完美安全隔离，也不保证能完全抵御恶意或已被攻破的 CLI。
 
-## Prerequisites
+## 前置条件
 
-| Requirement | Notes |
+| 要求 | 说明 |
 | --- | --- |
-| **Windows x64** | Primary supported platform for the packaged native helper. |
-| **Node.js ≥ 24** | Matches `engines.node` and `@types/node` 24. Use `npm.cmd` on Windows. |
-| **.NET 10 SDK** | Required only to **build** the native ProcessHost from source (`net10.0`). Install from [dotnet.microsoft.com/download](https://dotnet.microsoft.com/download). Build scripts **will not** download SDKs or toolchains automatically. |
-| **PowerShell** | Used by `build:native` (`scripts/build-native.ps1`). |
-| **Agent CLIs** | Existing vendor CLIs must already be installed and **logged in / authenticated** by you. TriAgent does **not** store credentials, API tokens, or login cookies. |
+| **Windows x64** | 打包的原生辅助程序主要支持平台。 |
+| **Node.js ≥ 24** | 与 `engines.node` 及 `@types/node` 24 一致。在 Windows 上请使用 `npm.cmd`。 |
+| **.NET 10 SDK** | 仅在从源码 **构建** 原生 ProcessHost 时需要（`net10.0`）。请从 [dotnet.microsoft.com/download](https://dotnet.microsoft.com/download) 安装。构建脚本 **不会** 自动下载 SDK 或工具链。 |
+| **PowerShell** | `build:native` 使用（`scripts/build-native.ps1`）。 |
+| **各代理 CLI** | 厂商 CLI 需已由你安装并 **登录 / 完成认证**。TriAgent **不** 存储凭据、API token 或登录 cookie。 |
 
-## Install (global, from a packed tarball)
+## 安装（全局，推荐从打包 tarball）
 
 ```powershell
 npm.cmd run build
@@ -23,9 +23,9 @@ npm.cmd install -g .\triagent-orchestrator-0.1.0.tgz
 triagent --help
 ```
 
-The packed tarball is large (~70–100+ MB) because it includes a **self-contained** win-x64 ProcessHost helper. That size is expected.
+打包 tarball 体积较大（约 70–100+ MB），因为内含 **自包含** 的 win-x64 ProcessHost 辅助程序，这是预期行为。
 
-Local development:
+本地开发：
 
 ```powershell
 npm.cmd install
@@ -33,24 +33,24 @@ npm.cmd run build
 node dist/cli.js --help
 ```
 
-### Build scripts
+### 构建脚本
 
-| Script | Behavior |
+| 脚本 | 行为 |
 | --- | --- |
-| `npm.cmd run build:native` | Fresh publish of ProcessHost to a unique staging dir, validate PE x64, atomically promote to stable publish path. Fails if the exact new exe is missing (never silently reuses a stale prebuilt). |
-| `npm.cmd run build:trust` | Computes helper SHA-256 / length / PE machine and writes `src/process/generated-native-helper-trust.ts` (deterministic constants only). |
-| `npm.cmd run build:node` | Bundles the CLI with tsup (`dist/cli.js` + source map), embedding trust constants and copying runtime SQLite migrations into `dist/migrations/`. |
-| `npm.cmd run build:copy-native` | Locked secure copy into `dist/native/win-x64/` with backup-swap atomic replace; verifies against embedded trust. |
-| `npm.cmd run build` | Orchestrated under an interprocess lock: native → trust → node → copy. |
-| `npm.cmd run prepack` | Locked `test` → `typecheck` → `build`. Set `TRIAGENT_SKIP_PREPACK=1` or use `npm pack --ignore-scripts` in packaging e2e to avoid recursive prepack loops. |
-| `npm.cmd run typecheck` | `tsc --noEmit`. |
-| `npm.cmd test` | Vitest. |
+| `npm.cmd run build:native` | 将 ProcessHost 全新发布到唯一暂存目录，校验 PE x64，再原子提升到稳定发布路径。若新 exe 缺失则失败（绝不静默复用陈旧预构建产物）。 |
+| `npm.cmd run build:trust` | 计算辅助程序 SHA-256 / 长度 / PE machine，并写入 `src/process/generated-native-helper-trust.ts`（仅确定性常量）。 |
+| `npm.cmd run build:node` | 用 tsup 打包 CLI（`dist/cli.js` + source map），嵌入信任常量，并将运行时 SQLite migrations 复制到 `dist/migrations/`。 |
+| `npm.cmd run build:copy-native` | 带锁的安全复制到 `dist/native/win-x64/`，备份交换式原子替换；对照嵌入信任常量校验。 |
+| `npm.cmd run build` | 在进程间锁下编排：native → trust → node → copy。 |
+| `npm.cmd run prepack` | 带锁执行 `test` → `typecheck` → `build`。打包 e2e 时可设 `TRIAGENT_SKIP_PREPACK=1` 或使用 `npm pack --ignore-scripts`，避免 prepack 递归。 |
+| `npm.cmd run typecheck` | `tsc --noEmit`。 |
+| `npm.cmd test` | Vitest。 |
 
-### Packaged allowlist (`files`)
+### 发布白名单（`files`）
 
-Only these paths ship:
+仅打包以下路径：
 
-- `dist/cli.js` (+ intended `dist/cli.js.map`)
+- `dist/cli.js`（以及预期的 `dist/cli.js.map`）
 - `dist/migrations/*.sql`
 - `dist/native/win-x64/triagent-process-host.exe`
 - `dist/native/win-x64/checksum-metadata.json`
@@ -58,101 +58,101 @@ Only these paths ship:
 - `schemas/`
 - `README.md`
 
-Excluded: `src/`, tests, docs/plans, worktrees, logs, databases, snapshots, settings, tokens, env files, tarballs, native source/build intermediates, and all transient `.tmp` / `.bak` / dotfiles under `dist/native`.
+排除：`src/`、测试、docs/plans、worktrees、日志、数据库、快照、设置、token、env 文件、tarball、原生源码/构建中间产物，以及 `dist/native` 下所有临时 `.tmp` / `.bak` / 点文件。
 
-### Helper trust and fail-closed validation
+### 辅助程序信任与失败关闭校验
 
-Runtime discovery resolves **only** the package-relative path:
+运行时发现 **仅** 解析包内相对路径：
 
 `dist/native/win-x64/triagent-process-host.exe`
 
-Before enabling real runs it verifies:
+在启用真实运行前会校验：
 
-- package containment before/after open/stat/hash;
-- regular file, **not** reparse/symlink;
-- `nlink === 1` (hardlink anomaly rejected);
-- SHA-256 and byte length match **embedded** trust constants compiled into `dist/cli.js` (adjacent metadata alone is not the trust anchor; swapping exe+metadata fails);
-- PE machine is exactly `0x8664` (win-x64) — undefined architecture is rejected.
+- 打开 / stat / 哈希前后均在包路径内；
+- 普通文件，**不是** reparse/symlink；
+- `nlink === 1`（拒绝硬链接异常）；
+- SHA-256 与字节长度必须匹配编译进 `dist/cli.js` 的 **嵌入** 信任常量（旁路元数据本身不是信任锚；同时替换 exe+metadata 会失败）；
+- PE machine 必须恰好为 `0x8664`（win-x64）— 架构未定义则拒绝。
 
-Missing or mismatched helpers **disable real runs fail-closed** with a diagnostic. TriAgent never searches `PATH`, cwd, project trees, or temp for a substitute helper. Production APIs do **not** accept an arbitrary helper path override (CLI/settings/env cannot select one). Tests may inject a fake helper only through an explicit test-only factory that cannot be selected by untrusted input.
+辅助程序缺失或不匹配时 **失败关闭**，禁用真实运行并给出诊断。TriAgent 绝不在 `PATH`、cwd、项目树或临时目录中搜索替代辅助程序。生产 API **不** 接受任意辅助程序路径覆盖（CLI/设置/环境变量均不可指定）。测试仅可通过显式、仅测试用的工厂注入假辅助程序，且无法由不可信输入选择。
 
-Build/copy use an interprocess lock so concurrent `build` / `copy-native` / pack steps serialize and leave zero tmp/bak/lock artifacts on success.
+构建/复制使用进程间锁，使并发的 `build` / `copy-native` / pack 串行化，成功后不留下 tmp/bak/lock 残留。
 
-There is **no** Authenticode / code-signing guarantee for the helper in this package.
+本包 **不** 对辅助程序提供 Authenticode / 代码签名保证。
 
-## CLI usage
+## CLI 用法
 
 ```text
 triagent [options]
 
-  --help                 Show help and exit (does not start the app)
-  --diagnostic           Open in database diagnostic / recovery-oriented mode
-  --app-root <path>      Override durable app data root (tests; absolute path)
-  --skip-health-probes   Skip adapter capability/health probes at startup
-  --skip-process-host    Do not start the native ProcessHost helper
+  --help                 显示帮助并退出（不启动应用）
+  --diagnostic           以数据库诊断 / 恢复导向模式打开
+  --app-root <path>      覆盖持久应用数据根（测试用；绝对路径）
+  --skip-health-probes   启动时跳过适配器能力/健康探测
+  --skip-process-host    不启动原生 ProcessHost 辅助程序
 ```
 
-Help does not compose the application, does not open the project database, and does not launch adapters, workers, or the native helper.
+帮助模式不会组装应用、不会打开项目数据库，也不会启动适配器、worker 或原生辅助程序。
 
-### Exit and process policy
+### 退出与进程策略
 
-- The CLI **never detaches** from the terminal session.
-- Handlers return testable exit codes and set `process.exitCode`; they do **not** bypass cleanup with an early `process.exit` while Job Objects / workers may still be live.
-- Shutdown is fail-closed: exit is blocked until cleanup is authorized.
+- CLI **永不** 从终端会话脱离（detach）。
+- 处理器返回可测试的退出码并设置 `process.exitCode`；在 Job Object / worker 可能仍存活时，**不会** 用提前 `process.exit` 绕过清理。
+- 关闭采用失败关闭：在清理被授权完成前，退出会被阻塞。
 
-## Auth and agent CLIs
+## 认证与代理 CLI
 
-TriAgent drives **existing** vendor CLIs. Complete each vendor’s own login / auth flow before real runs. TriAgent does not collect or persist API keys, OAuth tokens, or session cookies, and does not embed machine-specific absolute paths in the published package.
+TriAgent 驱动 **已有的** 厂商 CLI。真实运行前请先完成各厂商自己的登录 / 认证流程。TriAgent 不收集、不持久化 API 密钥、OAuth token 或会话 cookie，也不会在发布包中嵌入机器相关的绝对路径。
 
-### CLI upgrade compatibility
+### CLI 升级兼容性
 
-At startup TriAgent reads the installed Codex, Claude, and Grok versions. Built-in baseline versions use the static compatibility matrix. A newer version inside the supported major range is accepted only after fixed, no-model `--help` / `inspect --help` probes confirm every flag used by the current command templates. Missing flags, timeouts, nonzero exits, prerelease versions, downgrades, and next-major versions remain disabled.
+启动时 TriAgent 会读取已安装的 Codex、Claude、Grok 版本。内置基线版本使用静态兼容矩阵。同一支持主版本内的更新版本，仅在固定、无模型参与的 `--help` / `inspect --help` 探测确认当前命令模板用到的每个 flag 均可用后，才会被接受。缺失 flag、超时、非零退出、预发布版本、降级以及下一主版本仍保持禁用。
 
-Successful probe receipts are cached for seven days at `%LOCALAPPDATA%\TriAgent\cli-compatibility-cache.json` (or the test `--app-root`). Receipts are bound to CLI/version/platform, launcher path and SHA-256, and the probe-contract hash; expiry or any identity/contract change forces a new probe. The cache contains no capability booleans, credentials, or prompts. TriAgent does not automatically edit itself or invent replacement flags. `--skip-health-probes` also skips dynamic-version discovery, so unknown versions remain fail-closed for that launch.
+成功探测回执会缓存 7 天，路径为 `%LOCALAPPDATA%\TriAgent\cli-compatibility-cache.json`（或测试用的 `--app-root`）。回执绑定 CLI/版本/平台、启动器路径与 SHA-256，以及探测契约哈希；过期或身份/契约任一变化会强制重新探测。缓存不含能力布尔值、凭据或提示词。TriAgent 不会自动改写自身或臆造替代 flag。`--skip-health-probes` 也会跳过动态版本发现，因此该次启动中未知版本仍失败关闭。
 
-## Guardrails and limits (best-effort)
+## 护栏与限额（尽力而为）
 
-- Project path policy and patch validation try to block path escapes, arbitrary shell, and dependency installs — **best-effort**, not a security boundary against a hostile agent binary.
-- Runtime and call budgets are persisted and enforced across restart.
-- Reviewer / master roles are treated as read-only relative to project writes when adapters honor their profiles.
-- Implementer rework is capped (including a **3-rework** product limit).
-- Windows Job Objects supervise process trees for real runs; cleanup is verified with PID + start-time identity.
-- Corrupted SQLite opens **diagnostic** mode: side effects disabled.
+- 项目路径策略与补丁校验尽量阻止路径逃逸、任意 shell 与依赖安装 — **尽力而为**，不是对抗恶意代理二进制的安全边界。
+- 运行时与调用预算会持久化，并在重启后继续强制执行。
+- 在适配器遵守配置时，审查 / 主控角色相对项目写入视为只读。
+- 实施方返工有上限（含产品层 **3 次返工** 限制）。
+- 真实运行由 Windows Job Object 监管进程树；清理用 PID + 启动时间身份校验。
+- SQLite 损坏时进入 **诊断** 模式：禁用副作用。
 
-Do **not** treat TriAgent as a perfect multi-tenant sandbox or as a substitute for OS-level isolation.
+**不要** 把 TriAgent 当作完美的多租户沙箱，或 OS 级隔离的替代品。
 
-## Git and non-Git projects
+## Git 与非 Git 项目
 
-- **Git projects**: baselines use read-only git inspection. Dirty state is preserved; the baseline module does not reset, checkout, clean, commit, or push.
-- **Non-Git projects**: file baselines and snapshots are used; reparse/symlink metadata is recorded carefully and external escapes fail closed where enforced.
+- **Git 项目**：基线使用只读 git 检查。脏工作区会保留；基线模块不会 reset、checkout、clean、commit 或 push。
+- **非 Git 项目**：使用文件基线与快照；会谨慎记录 reparse/symlink 元数据，在强制处外部逃逸失败关闭。
 
-## Workflow features
+## 工作流能力
 
-- Dynamic role selection among the three collaborating agents.
-- Review and rework loops with structured results and master validation.
-- Crash recovery / reconcile on startup.
-- Settings under the durable app root (not in the project). Runtime-only overrides are not auto-persisted as credentials.
+- 三个协作代理之间的动态角色选择。
+- 审查与返工循环，带结构化结果与主控终检。
+- 启动时崩溃恢复 / 对账。
+- 设置存放在持久应用根下（不在项目内）。仅运行时的覆盖不会作为凭据自动持久化。
 
-## Durable data location
+## 持久数据位置
 
-On Windows, durable data defaults to `%LOCALAPPDATA%\TriAgent` (SQLite, JSONL logs, snapshots, native-helper diagnostics, settings). Never the project cwd. Override only for tests with `--app-root` / `TRIAGENT_APP_ROOT` (absolute path).
+在 Windows 上，持久数据默认位于 `%LOCALAPPDATA%\TriAgent`（SQLite、JSONL 日志、快照、原生辅助程序诊断、设置）。**绝不是** 项目 cwd。仅测试可用 `--app-root` / `TRIAGENT_APP_ROOT`（绝对路径）覆盖。
 
-## Tests
+## 测试
 
 ```powershell
 npm.cmd test
 npm.cmd run typecheck
 ```
 
-### Real AI tests (opt-in, disabled by default)
+### 真实 AI 测试（可选开启，默认关闭）
 
 ```powershell
 $env:TRIAGENT_REAL_AI_TESTS = '1'
 npm.cmd test -- tests/e2e/real-cli-smoke.test.ts
 ```
 
-Without `TRIAGENT_REAL_AI_TESTS=1`, suites must not place live AI calls.
+未设置 `TRIAGENT_REAL_AI_TESTS=1` 时，测试套件不得发起在线 AI 调用。
 
-## License
+## 许可证
 
-Private package (`"private": true`) unless a license file is added later.
+私有包（`"private": true`），除非之后另行添加许可证文件。
