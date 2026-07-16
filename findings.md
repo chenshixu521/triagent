@@ -1,5 +1,14 @@
 # Findings
 
+## 2026-07-16 操作者上下文 / 同任务继续
+
+- CREATE_TASK/APPROVE 若同步 await 整条流水线，TUI 与 smoke 会卡住；改为后台 drive + 轮询终态。
+- master 终检若复用「已 completed 的 planning conversation id」，Claude 报 `No conversation found with session ID`。策略：master/reviewer 仅当 `exitReason=interrupted` 或 `status=active` 才 resume；implementer 仍可按 session 证据续聊。
+- 代理失败进入 `awaiting_user` 时，若 UI 不填 `recoveryAllowedActions`，且 `#recoveryContinue` 要求 operatorHold，则 [C] 落到 RestartRecoveryService 并因同实例锁被 block。修复：live snapshot 暴露 continue/cancel；无 hold 时同会话调用 `continueAfterOperatorHold`。
+- Claude 上游 502 会把任务停在 `awaiting_user` + `resumeTargetState=planning`；smoke 可自动 `RECOVERY_CONTINUE`。2026-07-16 成功跑未触发 502，一次通过。
+- PowerShell `node … 2>&1 | Tee-Object` 会把 stderr 进度标成 NativeCommandError，进程 exit 1；以 summary `passed`/`exitCode` 为准。
+- 最新全绿证据：`D:\tmp\triagent-isolated-grok-e2e-1784163252628-47016`。
+
 ## 2026-07-15 Task 12 真实验收（最终全绿）
 
 - Production runtime 曾未注入 `implementationWorkspacesDirectory`，Grok implementer 在 prepare 时必炸。

@@ -1,5 +1,22 @@
 # Progress
 
+## 2026-07-16（文档同步 + 操作者上下文回归真机）
+
+- 更新 `docs/verification/acceptance-checklist.md`、`HANDOFF_PLAN.md`、`findings.md`：对齐最新真机证据与 post–Task-12 能力状态。
+- **Task 12 回归 GREEN**（含同任务继续 / 角色续聊策略 / awaiting_user 续跑修复后）：
+  - 证据：`D:\tmp\triagent-isolated-grok-e2e-1784163252628-47016`
+  - `passed: true`，`exitCode: 0`，`workflowState: completed`
+  - task `task-0076e40b-e3ea-41fb-a97d-d9ca9d029e20`
+  - master → implementer(Grok isolated) → reviewer(Codex approved) → master validation approved → promote
+  - CLI：`dist\cli.js`；commit 基线 `608c993`
+- 本轮已合入 main 的能力链（`797a2e6`…`608c993`）：
+  - 同任务 continue、进程清理、隔离工作区复用
+  - 异步 CREATE_TASK/APPROVE
+  - 全角色续聊；master/reviewer 仅 interrupted/active 才 resume（`e9a1b1b`）
+  - 运行中上下文投递 UX
+  - agent-fail `awaiting_user` 同会话 [C]（`608c993`）
+- 可选未做：真机中断续跑专项、真机 [M] 专项、真实时 stdin、harness 入库。
+
 ## 2026-07-15（收尾：合入 main + Task 12 全绿）
 
 - 将 `.worktrees/triagent-implementation` 全部源码/测试/文档同步到主仓根目录。

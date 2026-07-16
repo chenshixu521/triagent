@@ -20,8 +20,10 @@
 12. **已完成** — 已按 TDD 修复同一路径再次创建任务时 `UNIQUE constraint failed: projects.root_path`：持久化层原子复用已有 canonical project ID，工作流用实际返回 ID 创建 task；完整离线验证、打包、全局覆盖安装及默认数据库无 AI smoke 均通过。
 13. **已完成** — 已按 TDD 修复确认任务后的三项串联故障：Claude JSON auth 解析、Codex 0.144.4 全局 approval 参数/探测层级、pre-attempt 环境失败锁释放身份传播；完成完整离线验证、全局覆盖安装、三 CLI 无模型实机健康探测及默认数据库恢复清理。
 14. **已完成** — 用户明确批准真实 AI 端到端验收：在隔离非 Git 目录中让 Claude(master)、Codex(implementer)、Grok(reviewer)完成“只创建一个固定内容文本文件”的简单需求，核对工作流终态、文件内容、三角色 attempt/review 证据与锁清理。
-15. **已完成** — Task 1–12 全部完成。Task 12 全绿证据：`D:\tmp\triagent-isolated-grok-e2e-1784098761755-44168`（promote + smoke 文件 + 零锁）。源码已从工作树合入主仓 `main`。
+15. **已完成** — Task 1–12 全部完成。Task 12 首绿证据：`D:\tmp\triagent-isolated-grok-e2e-1784098761755-44168`（promote + smoke 文件 + 零锁）。源码已从工作树合入主仓 `main`。
 16. **已完成** — 收尾：更新 HANDOFF/progress/findings/acceptance-checklist；主仓可直接 `npm run build` 与 harness 复跑。
+17. **已完成** — 操作者上下文与同任务继续（interrupt/[C]、进程清理、工作区复用、异步 drive、角色续聊策略、运行中 [M]、awaiting_user 同会话 [C]）；2026-07-16 Task 12 回归绿：`D:\tmp\triagent-isolated-grok-e2e-1784163252628-47016`；文档已同步至 `608c993` 状态。
+18. **可选** — 真机中断续跑专项、真机 [M] 专项、CLI 真实时输入、harness 迁入 `scripts/`、完整离线测试信心回归（均非主路径阻塞）。
 
 ## 边界
 

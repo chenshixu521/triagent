@@ -1,8 +1,8 @@
 # TriAgent Task 23 Acceptance Checklist
 
-Date: 2026-07-15 (Asia/Shanghai)
+Date: 2026-07-16 (Asia/Shanghai)
 
-Status: automated/offline acceptance previously passed. **Isolated real-AI closed loop (Task 12) passed on 2026-07-15** with Claude master / Grok isolated implementer / Codex reviewer → promote. Evidence: `D:\tmp\triagent-isolated-grok-e2e-1784098761755-44168` (`passed: true`, `postApplyVerified: true`, zero active locks).
+Status: automated/offline acceptance previously passed. **Isolated real-AI closed loop (Task 12) re-verified on 2026-07-16** after operator-context / same-task-continue work: Claude master / Grok isolated implementer / Codex reviewer → promote. Latest evidence: `D:\tmp\triagent-isolated-grok-e2e-1784163252628-47016` (`passed: true`, `exitCode: 0`, `postApplyVerified: true`, zero active locks). First full-green evidence (2026-07-15): `D:\tmp\triagent-isolated-grok-e2e-1784098761755-44168`. Main at verification: `608c993`.
 
 ## Execution boundary
 
@@ -94,24 +94,50 @@ All listed automated gates were included in the passing full suite:
 - Grok dynamic records remain enforcement-conservative (`readOnly=false`, `projectWrite=false`, `nativePermissionRules=false`, `writeModes=[]`).
 - Approved start-screen fidelity: complete outer frame, gold `#d6a756` brand/prompt, wide-screen right-top 32x10 three-tail TriFox, full-width Project section, large prompt, bottom roles/shortcuts, and non-overflowing 60x24 Chinese layout.
 
-## Task 12 real isolated Grok e2e (2026-07-15)
+## Task 12 real isolated Grok e2e
 
 Harness: `D:\tmp\triagent-isolated-grok-e2e-smoke.mjs`  
-Evidence root: `D:\tmp\triagent-isolated-grok-e2e-1784098761755-44168`
+CLI under test (2026-07-16): `D:\codex\project\agent_help\dist\cli.js` (main build, not worktree-only)
+
+### Latest green run (2026-07-16)
+
+Evidence root: `D:\tmp\triagent-isolated-grok-e2e-1784163252628-47016`  
+Task: `task-0076e40b-e3ea-41fb-a97d-d9ca9d029e20`  
+Wall time: ~12.5 minutes
 
 | Check | Result |
 | --- | --- |
 | `passed` / `exitCode` | `true` / `0` |
 | `workflowState` | `completed` |
-| Roles exercised | master, implementer, reviewer |
-| Reviews | Codex approved; Claude master approved |
-| Promote | `promoted`, `postApplyVerified: true` |
+| Roles exercised | master, implementer, reviewer (4 attempts: plan → implement → review → master validation) |
+| Reviews | Codex `approved`; Claude master `approved` |
+| Promote | `promoted`, `postApplyVerified: true`, filesWritten `triagent-smoke.txt` |
 | Canonical files | `README.md` + `triagent-smoke.txt` only |
 | Smoke content | `TriAgent isolated Grok smoke completed.` |
 | Active locks | none |
 | Rework count | 0 |
+| Git commit at re-verify | `608c993` (includes awaiting_user same-session continue) |
 
-Key product fixes proven on this path: isolated workspace write for Grok, candidate change-set finalize, immutable review against candidate, `inspectionRoot` for master/review, real PatchApplier promotion with post-apply hash equality.
+### Prior green run (2026-07-15)
+
+Evidence root: `D:\tmp\triagent-isolated-grok-e2e-1784098761755-44168`  
+Same acceptance matrix (`passed: true`, promote + post-apply verify + zero locks).
+
+Key product fixes proven on this path: isolated workspace write for Grok, candidate change-set finalize, immutable review against candidate, `inspectionRoot` for master/review, real PatchApplier promotion with post-apply hash equality, master validation not resuming a completed planning session, async CREATE_TASK background drive.
+
+### Post–Task-12 operator / context work (offline + re-verify)
+
+Shipped on `main` after first Task 12 green (commits `797a2e6` … `608c993`):
+
+| Feature | Status |
+| --- | --- |
+| Same-task continue after interrupt hold `[C]` | Implemented + unit tests |
+| BeginProcessCleanup / requestInterrupt | Implemented + unit tests |
+| Reuse isolated Grok workspace after interrupt | Implemented + unit tests |
+| Role-safe multi-role resume (implementer; master/reviewer only if interrupted/active) | Implemented; master resume bug fixed `e9a1b1b` |
+| Mid-run `[M]` context queue / handle delivery UX | Implemented + unit tests (`realTimeInput` still false → next_stage/handle_queued) |
+| Live `awaiting_user` after agent-fail: recovery actions + same-session `[C]` | Implemented `608c993` + unit tests; harness can auto-continue |
+| Full real three-AI closed loop after the above | **Passed** 2026-07-16 evidence above |
 
 ## Package evidence
 
@@ -142,15 +168,25 @@ schemas/agent-patch-result.schema.json
 schemas/agent-result.schema.json
 ```
 
-## Pending real acceptance
+## Real acceptance status
 
-The opt-in smoke harness uses the real `CodexAdapter` / `ClaudeAdapter`, a trusted packaged ProcessHost, static or runtime-probed compatibility records, and store-backed one-time launch authorizations. It fails instead of skipping when the enabled CLI, auth state, helper, or verified command contract is unavailable.
+The opt-in smoke harness uses the real Claude / Grok / Codex adapters, a trusted packaged ProcessHost, static or runtime-probed compatibility records, and store-backed one-time launch authorizations. It fails instead of skipping when the enabled CLI, auth state, helper, or verified command contract is unavailable. Process-only env: `TRIAGENT_REAL_AI_TESTS=1` (not written to settings).
 
-| Check | Status | Reason |
+| Check | Status | Evidence / note |
 | --- | --- | --- |
-| Opt-in Codex read-only smoke | NOT RUN | Awaiting explicit quota-consuming-call approval. |
-| Opt-in Claude safe read-only smoke | NOT RUN | Awaiting explicit quota-consuming-call approval. |
-| Grok real smoke | NOT RUN | Explicitly excluded by the user's current instruction; no Grok invocation. |
-| Disposable real closed loop | NOT RUN | Must wait until the authorized real smoke tests pass. |
+| Disposable real closed loop (Claude plan → Grok isolated implement → Codex review → master validate → promote) | **PASSED** | `D:\tmp\triagent-isolated-grok-e2e-1784163252628-47016` (2026-07-16); also `…1784098761755-44168` (2026-07-15) |
+| Grok isolated implementer real write + promote | **PASSED** | Candidate write then PatchApplier promote; canonical content verified |
+| Codex reviewer real approve | **PASSED** | `reviews.reviewerRole=reviewer`, `verdict=approved` |
+| Claude master real plan + final validation | **PASSED** | Separate master attempts for plan and master_validation (no completed-planning session reuse on final check) |
+| Real interrupt → `[C]` same-task continue | NOT RUN (real) | Covered by unit/integration; dedicated live interrupt smoke optional |
+| Real mid-run `[M]` context injection | NOT RUN (real) | Offline covered; CLI `realTimeInput` remains false (queue / next-stage path) |
+| Standalone Claude/Codex read-only opt-in smokes | SUPERSEDED | Replaced by full closed-loop harness above when quota is authorized |
 
-Known degradations: the native helper is not Authenticode-signed; dynamic compatibility is limited to the declared major ranges and current fixed command templates; the installed Grok 0.2.101 live help probe was not rerun in this acceptance because the user explicitly prohibited Grok invocation; orchestration guardrails are best-effort rather than a hostile-code security boundary; the package is large because the ProcessHost is self-contained.
+### Optional remaining (not product blockers)
+
+- Dedicated real smoke: operator interrupt + same-task continue + workspace reuse.
+- True mid-turn live stdin if/when any CLI verifies `realTimeInput`.
+- Move smoke harness from `D:\tmp\…` into repo `scripts/` if desired.
+- Full offline `npm test` re-run after recent operator-context commits (confidence only).
+
+Known degradations: the native helper is not Authenticode-signed; dynamic compatibility is limited to the declared major ranges and current fixed command templates; orchestration guardrails are best-effort rather than a hostile-code security boundary; the package is large because the ProcessHost is self-contained; Grok live `projectWrite` remains disabled by design (isolated workspace only).

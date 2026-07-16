@@ -4,7 +4,7 @@
  * Contains only deterministic hash/length/machine (no absolute paths).
  */
 export const EMBEDDED_NATIVE_HELPER_SHA256 =
-  "f821cdf1659f4d55d6072b3838444957d175bbc1b9c2b9385493d16b0882f8f1" as const;
+  "5ddb27efcf02d7cc7ffafa52320fe855592871fb2940e99e1fd82f30aba6c925" as const;
 export const EMBEDDED_NATIVE_HELPER_BYTE_LENGTH = 73525322 as const;
 export const EMBEDDED_NATIVE_HELPER_PE_MACHINE = 0x8664 as const;
 export const EMBEDDED_NATIVE_HELPER_PLATFORM = 'win-x64' as const;
