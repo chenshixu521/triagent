@@ -15,6 +15,7 @@ import type {
   ControllerDispatchResult,
   LogBuckets,
   TuiIntent,
+  TuiRecoveryAction,
   TuiScreen,
   TuiSnapshot,
 } from '../tui/store.js';
@@ -201,6 +202,23 @@ function appendActivity(
   };
 }
 
+function recoveryActionsForState(
+  task: PersistedTask,
+): readonly TuiRecoveryAction[] {
+  const state = task.workflowSnapshot.state;
+  if (state === 'interrupted_needs_inspection' || state === 'cleanup_failed') {
+    return Object.freeze(['inspect', 'continue', 'cancel'] as const);
+  }
+  if (state === 'awaiting_user') {
+    const allowed = task.workflowSnapshot.allowedAwaitingActions ?? [];
+    const actions = (['continue', 'cancel'] as const).filter((action) =>
+      allowed.includes(action),
+    );
+    return Object.freeze(actions);
+  }
+  return Object.freeze([] as const);
+}
+
 function taskSnapshot(
   task: PersistedTask,
   projectPath: string,
@@ -220,6 +238,7 @@ function taskSnapshot(
 ): Partial<TuiSnapshot> {
   const state = task.workflowSnapshot.state;
   const processRunning = PROCESS_STATES.has(state);
+  const recoveryAllowedActions = recoveryActionsForState(task);
   return {
     screen: options.forceRunScreen ? 'run' : screenForState(state),
     workflowState: state,
@@ -237,6 +256,7 @@ function taskSnapshot(
     statusMessage:
       options.statusMessage
       ?? statusForState(state),
+    recoveryAllowedActions,
     ...(options.logs === undefined ? {} : { logs: options.logs }),
     ...(options.activityLines === undefined
       ? {}
@@ -712,9 +732,49 @@ export class TaskSessionController {
   }
 
   async #recoveryContinue(taskId: string): Promise<ControllerDispatchResult | undefined> {
-    if (!this.#operatorHold || this.#roles === undefined || this.#selectedProject === undefined) {
+    if (this.#roles === undefined || this.#selectedProject === undefined) {
       return undefined;
     }
+
+    // Live agent-fail park (awaiting_user with continue) is not an interrupt hold,
+    // but still belongs to this session — handle [C] here instead of restart recovery.
+    if (!this.#operatorHold) {
+      const parked = this.#safeTask();
+      if (
+        parked === undefined
+        || parked.taskId !== taskId
+        || parked.status !== 'awaiting_user'
+        || !parked.workflowSnapshot.allowedAwaitingActions?.includes('continue')
+        || this.#runtime === undefined
+        || this.#runtimeDisposed
+        || this.#runtime.continueAfterOperatorHold === undefined
+      ) {
+        return undefined;
+      }
+      this.#pushActivity(
+        renderActivityLine(
+          'stage',
+          `同任务继续 ${parked.taskId}（awaiting_user → ${
+            parked.workflowSnapshot.resumeTargetState ?? 'resume'
+          }）`,
+        ),
+      );
+      this.#startBackgroundDrive(this.#runtime, this.#roles, 'continue');
+      const snap = {
+        screen: 'run' as const,
+        loading: true,
+        processRunning: true,
+        taskId: parked.taskId,
+        workflowState: parked.status,
+        recoveryAllowedActions: Object.freeze([] as const),
+        statusMessage: `已继续 — 同任务 ${parked.taskId} 恢复中`,
+        logs: this.#activityLogs,
+        activityLines: this.#activityLines,
+      };
+      this.#onProgress?.(snap);
+      return { kind: 'snapshot', snapshot: snap };
+    }
+
     const task = this.#safeTask();
     if (task !== undefined && task.taskId !== taskId) return undefined;
 
@@ -891,9 +951,26 @@ export class TaskSessionController {
   }
 
   async #recoveryCancel(taskId: string): Promise<ControllerDispatchResult | undefined> {
-    if (!this.#operatorHold || this.#roles === undefined) return undefined;
+    if (this.#roles === undefined) return undefined;
     const task = this.#safeTask();
     if (task !== undefined && task.taskId !== taskId) return undefined;
+
+    // Live awaiting_user cancel (agent-fail park) without interrupt hold.
+    if (
+      !this.#operatorHold
+      && (
+        task === undefined
+        || task.status !== 'awaiting_user'
+        || !task.workflowSnapshot.allowedAwaitingActions?.includes('cancel')
+        || this.#runtime === undefined
+      )
+    ) {
+      return undefined;
+    }
+    if (!this.#operatorHold && task === undefined) {
+      return undefined;
+    }
+
     this.#operatorHold = false;
     this.#driveGeneration += 1;
     this.#pushActivity(renderActivityLine('system', '用户取消了已中断的任务'));

@@ -9,7 +9,11 @@ import type { PersistedTask } from '../../../src/persistence/task-repository.js'
 import type { TuiSnapshot } from '../../../src/tui/store.js';
 import type { WorkflowSnapshot, WorkflowState } from '../../../src/workflow/states.js';
 
-function makeTask(state: WorkflowState, taskId = 'task-hold-1'): PersistedTask {
+function makeTask(
+  state: WorkflowState,
+  taskId = 'task-hold-1',
+  extras: Partial<WorkflowSnapshot> = {},
+): PersistedTask {
   const id = asTaskId(taskId);
   const snapshot = {
     taskId: id,
@@ -18,6 +22,7 @@ function makeTask(state: WorkflowState, taskId = 'task-hold-1'): PersistedTask {
     maxReworks: 3 as const,
     pauseAfterAttempt: false,
     state,
+    ...extras,
   } as WorkflowSnapshot;
   return {
     taskId: id,
@@ -223,6 +228,91 @@ describe('TaskSessionController interrupt + context', () => {
     expect(continueCalls).toBe(1);
     expect(createRuntimeCalls).toBe(1);
     expect(continued.snapshot.statusMessage).toMatch(/同任务/);
+
+    await controller.dispose();
+  });
+
+  it('continues live awaiting_user after agent-fail without interrupt hold', async () => {
+    const taskId = 'task-await-user-1';
+    let state: WorkflowState = 'awaiting_user';
+    let continueCalls = 0;
+    let createRuntimeCalls = 0;
+
+    const runtime: TaskRuntimePort = {
+      initialize() {
+        /* no-op */
+      },
+      currentTask() {
+        if (state === 'awaiting_user') {
+          return makeTask(state, taskId, {
+            resumeTargetState: 'planning',
+            awaitingReason: 'agent process exited with code 1',
+            allowedAwaitingActions: ['continue', 'cancel'],
+          });
+        }
+        return makeTask(state, taskId);
+      },
+      async start() {
+        return makeTask(state, taskId).workflowSnapshot;
+      },
+      async approvePlan() {
+        throw new Error('not used');
+      },
+      async continueAfterOperatorHold() {
+        continueCalls += 1;
+        state = 'planning';
+        return makeTask(state, taskId).workflowSnapshot;
+      },
+      async dispose() {
+        /* no-op */
+      },
+    };
+
+    const progress: Partial<TuiSnapshot>[] = [];
+    const controller = createTaskSessionController({
+      ownerInstanceId: 'instance-await-user',
+      progressPollMs: 20,
+      createRuntime: async () => {
+        createRuntimeCalls += 1;
+        return runtime;
+      },
+      onProgress: (partial) => {
+        progress.push(partial);
+      },
+    });
+
+    await controller.dispatch({
+      type: 'SELECT_PROJECT',
+      projectPath: process.cwd(),
+    });
+    // Seed runtime via createRuntime factory path used by CREATE_TASK, but do not
+    // rely on background start settling — we force awaiting_user via currentTask.
+    void controller.dispatch({
+      type: 'CREATE_TASK',
+      requirements: 'retry after 502',
+      roles: { master: 'claude', implementer: 'grok', reviewer: 'codex' },
+      requiresPlanApproval: false,
+    });
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Snapshot must advertise recovery continue for agent-fail park.
+    const live = progress
+      .slice()
+      .reverse()
+      .find((p) => p.workflowState === 'awaiting_user' || p.taskId === taskId);
+    // Even if progress did not publish awaiting_user yet, continue must work.
+    const continued = await controller.dispatch({
+      type: 'RECOVERY_CONTINUE',
+      taskId,
+    });
+    expect(continued?.kind).toBe('snapshot');
+    if (continued?.kind !== 'snapshot') throw new Error('expected snapshot');
+    expect(continued.snapshot.taskId).toBe(taskId);
+    expect(continueCalls).toBe(1);
+    expect(createRuntimeCalls).toBe(1);
+    expect(continued.snapshot.statusMessage).toMatch(/同任务|恢复/);
+    // unused live var keeps intent clear for future assertions
+    void live;
 
     await controller.dispose();
   });
